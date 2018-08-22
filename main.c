@@ -3,6 +3,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <string.h>
+#include <linux/sched.h>
 
 #define SYMBOL_SIZE 64
 #define SYSTEM_MAP_SIZE 100000
@@ -63,7 +64,7 @@ This function returns the associated virtual address of a symbol
 @param symbol - the symbol to search for
 @returns Either the address if found or -1 if sysmbol isn't present
 */
-unsigned long long get_symbol_addr(Map** map, const char* symbol) {
+unsigned long long get_symbol_vaddr(Map** map, const char* symbol) {
     for (int i = 0; i < SYSTEM_MAP_SIZE; i++) {
         if (strcmp(map[i]->symbol, symbol) == 0) {
             return map[i]->vaddr;
@@ -72,6 +73,16 @@ unsigned long long get_symbol_addr(Map** map, const char* symbol) {
     return -1;
 }
 
+/*
+This function returns the physical address from the given virtual address
+@params vaddr - the virtual address of the symbol
+@params paddr - the physical address of the symbol or -1
+*/
+unsigned long long get_symbol_paddr(const unsigned long long vaddr) {
+    unsigned long long paddr;
+    //TODO make translation
+    return paddr; 
+}
 
 /*
 This function parses the system map file and returns a pointer 
@@ -132,6 +143,6 @@ int main(void) {
     }
     FILE* sysmap_fp = open_file(sys_filename);
     Map** map = parse_system_map(sysmap_fp);
-    unsigned long long init_task_addr = get_symbol_addr(map, "init_task"); 
+    unsigned long long init_task_addr = get_symbol_vaddr(map, "init_task"); 
     return 0;
 }
