@@ -63,7 +63,6 @@ off_t get_file_length(int fd) {
     lseek(fd, 0, SEEK_SET);
     off_t size = lseek(fd, 0, SEEK_END);
     if(size == (off_t) -1) {
-        printf("Error: %s\n", strerror(errno));
         _die("Cannot seek");
     }
     lseek(fd, 0, SEEK_SET);
@@ -114,13 +113,12 @@ void get_lime_headers(int fd, LHdr *first_lhdr, LHdr *second_lhdr) {
 
     if (read(fd, first_lhdr, sizeof(LHdr)) != sizeof(LHdr))
         _die("unable to read in first lime header");
-
-    printf("first: %x", first_lhdr->magic);
     
     off64_t block_size = first_lhdr->e_addr - first_lhdr->s_addr + 1;
 
-    printf("block_size: %llu\n", block_size);
-    if (lseek64(fd, block_size, SEEK_CUR) != block_size - 1) {
+    off64_t seek = lseek64(fd, block_size, SEEK_CUR); 
+    long header_length = sizeof(LHdr);
+    if (seek != block_size + header_length) {
         _die("unable to seek to the second header"); 
     }
 
@@ -128,19 +126,49 @@ void get_lime_headers(int fd, LHdr *first_lhdr, LHdr *second_lhdr) {
         _die("unable to read in second lime header");
 
     printf("header:\nmagic: %x\nstart: %llx\nend: %llx", 
-    first_lhdr->magic,
-    first_lhdr->s_addr,
-    first_lhdr->e_addr
+    second_lhdr->magic,
+    second_lhdr->s_addr,
+    second_lhdr->e_addr
     );
 
 }
+
+/*
+This function takes the address of init_task and fills a task_struct
+structure
+@params fd - file descriptor of dump
+@params first - first lime header in dump
+@params second - second line header
+@params task_struct - the struct to fill
+@params addr - the address of the struct in the dump
+*/
+void find_init_task(int fd, LHdr *first, LHdr *second, struct task_struct *ts, unsigned long long addr) {
+    // find which header to use
+    LHdr* l = first;
+    if(addr > first->e_addr) {
+        l = second;
+    }
+
+    off64_t block_size = first->e_addr - first->s_addr + 1;
+    long long header_length = sizeof(LHdr);
+    if (lseek64(fd, block_size + header_length, SEEK_SET) != (block_size + header_length)) {
+        _die("unable to seek to correct block");
+    }
+
+    if (addr > l->e_addr) {
+        _die("Address greater than block size");
+    }
+
+    //lseek to correct location
+    //fill task
+}
+
 /*
 This function parses the system map file and returns a pointer 
 to an array of symbols
 */
 Map** parse_system_map(int fd) {
     off_t fileSize = get_file_length(fd);
-    printf("length: %llu\n", fileSize);
     char* buff = malloc(sizeof(char) * (fileSize + 2));
     if ((read(fd, buff,fileSize) == -1)) {
         fprintf(stderr, "Unable to system map\n");
@@ -187,6 +215,10 @@ Map** parse_system_map(int fd) {
     return map;
 }
 
+void print_process_list(struct task_struct *ts) {
+    
+}
+
 int main(void) {
     if (getuid() != 0) {
         fprintf(stderr, "Run as root!\n");
@@ -195,11 +227,17 @@ int main(void) {
     int sysmap_fd = open_file(sys_filename);
     Map** map = parse_system_map(sysmap_fd);
     unsigned long long init_task_addr = get_symbol_paddr(get_symbol_vaddr(map, "init_task"));
-
+    printf("address of init task: %llx\n", init_task_addr);
+    printf("vaddr of init: %llx\n", get_symbol_vaddr(map, "init_task"));
+    
     int dump_fd = open_file(dump_filename);
     //MAKE AN ARRAY OF HEADERS OR VARIABLE NUM OF HEADERS
     LHdr first_lhdr;
     LHdr second_lhdr;
     get_lime_headers(dump_fd, &first_lhdr, &second_lhdr);
+    
+    struct task_struct *init_task = NULL;
+    find_init_task(dump_fd, &first_lhdr, &second_lhdr, init_task, init_task_addr);
+    print_process_list(init_task);
     return 0;
 }
