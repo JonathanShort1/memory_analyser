@@ -1,61 +1,76 @@
+#define _LARGEFILE64_SOURCE
+
 #include <stdlib.h>
 #include <stdio.h>
-#include <sys/types.h>
-#include <unistd.h>
 #include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <linux/sched.h>
+
+#include "main.h"
 
 #define SYMBOL_SIZE 64
 #define SYSTEM_MAP_SIZE 100000
+#define STATIC_OFFSET 0xffff880000000000
 
 static int debug = 0;
 
+const char* sys_filename = "system_map";
+const char* dump_filename = "out.bin";
+
 void _debug(const char* msg) {
     if (debug) {
-        fprintf(stdout, "DEBUG: %s", msg);
+        fprintf(stdout, "DEBUG: %s\n", msg);
     }
 }
 
-const char* sys_filename = "system_map";
+void _die(const char* msg) {
+    fprintf(stderr, "Error: %s\n", msg);
+    exit(1);
+}
 
-typedef struct symbol {
-    unsigned long long vaddr;
-    char symbol[256];
-} Map;
 
 /*
-This function opens a file and returns a file pointer
+This function opens a file and returns a file descriptor
 @param filename - char* to name of file
-@return a FILE pointer to the file
+@return a FILE descriptor to the file
 */
-FILE* open_file(const char* filename) {
-    FILE* fp;
+int open_file(const char* filename) {
+    int fd;
 
-    if (!(fp = fopen(filename, "r"))) {
+    fd = open(filename, O_RDWR); 
+    
+    if (fd == -1) {
         fprintf(stderr, "Could not open file: %s", filename);
         exit(1);
     }
     
-    _debug("Succesful open of System map");
+    _debug("Succesful open of file");
 
-    return fp;
+    return fd;
 }
 
 /*
 This function returns the length of a file using fseek()
-@params fp - an open FILE*
+@params fd - an open descriptor
 @returns n or 0
 */
-int file_length(FILE* fp) {
-    int fileSize = 0;
+off_t get_file_length(int fd) {
+    lseek(fd, 0, SEEK_SET);
+    off_t size = lseek(fd, 0, SEEK_END);
+    if(size == (off_t) -1) {
+        printf("Error: %s\n", strerror(errno));
+        _die("Cannot seek");
+    }
+    lseek(fd, 0, SEEK_SET);
+     
+    _debug("found size of file");
     
-    fseek(fp, 0L, SEEK_END);
-    fileSize = ftell(fp);
-    fseek(fp, 0L, SEEK_SET);
-
-    fileSize == 0 ? _debug("Coultdn't find size of file") : _debug("found size of file");
-    
-    return fileSize;
+    return size;
 }
 
 /* 
@@ -79,20 +94,57 @@ This function returns the physical address from the given virtual address
 @params paddr - the physical address of the symbol or -1
 */
 unsigned long long get_symbol_paddr(const unsigned long long vaddr) {
-    unsigned long long paddr;
-    //TODO make translation
-    return paddr; 
+    //checking for potential overflow
+    if (vaddr > STATIC_OFFSET) {
+        return vaddr - STATIC_OFFSET;
+    }
+    return -1; 
 }
 
+/*
+This function fills two struct is data for Lime headers
+@params fp - file pointer for dump file
+@params first_LHdr - first lime header in dump
+@params second_LHdr - second lime header in dump
+@returns fills the above structs or they return null on failure
+*/
+void get_lime_headers(int fd, LHdr *first_lhdr, LHdr *second_lhdr) {
+    if (lseek64(fd, 0, SEEK_SET) != 0) 
+        _die("Unable to seek to offset 0 in dump");
+
+    if (read(fd, first_lhdr, sizeof(LHdr)) != sizeof(LHdr))
+        _die("unable to read in first lime header");
+
+    printf("first: %x", first_lhdr->magic);
+    
+    off64_t block_size = first_lhdr->e_addr - first_lhdr->s_addr + 1;
+
+    printf("block_size: %llu\n", block_size);
+    if (lseek64(fd, block_size, SEEK_CUR) != block_size - 1) {
+        _die("unable to seek to the second header"); 
+    }
+
+    if (read(fd, second_lhdr, sizeof(LHdr)) != sizeof(LHdr))
+        _die("unable to read in second lime header");
+
+    printf("header:\nmagic: %x\nstart: %llx\nend: %llx", 
+    first_lhdr->magic,
+    first_lhdr->s_addr,
+    first_lhdr->e_addr
+    );
+
+}
 /*
 This function parses the system map file and returns a pointer 
 to an array of symbols
 */
-Map** parse_system_map(FILE* fp) {
-    int fileSize = file_length(fp);
-
+Map** parse_system_map(int fd) {
+    off_t fileSize = get_file_length(fd);
+    printf("length: %llu\n", fileSize);
     char* buff = malloc(sizeof(char) * (fileSize + 2));
-    fread(buff, sizeof(char), fileSize,fp);
+    if ((read(fd, buff,fileSize) == -1)) {
+        fprintf(stderr, "Unable to system map\n");
+    }
     buff[fileSize] = '\0';
 
     Map **map = malloc (SYSTEM_MAP_SIZE * sizeof(Map));
@@ -104,17 +156,16 @@ Map** parse_system_map(FILE* fp) {
     char *strtol_ptr;
     tok_line = strtok_r(buff, "\n", &tok_line_end);
     
-    int index = 0;
-    int i = 0;
+    int index = 0; //line being parsed
+    int i = 0; // position in line 0, 1, 2 -> addr, type, sym
 
     while(tok_line) {
         map[index] = malloc(sizeof(Map));
-         
         tok_space = strtok_r(tok_line, " ", &tok_space_end);
         while(tok_space) {
             switch(i) {
                 case 0: // Address 
-                    map[index]->vaddr = strtol(tok_space, &strtol_ptr, 16);
+                    map[index]->vaddr = strtoull(tok_space, &strtol_ptr, 16);
                     break;
                 case 1:
                     // not used
@@ -141,8 +192,14 @@ int main(void) {
         fprintf(stderr, "Run as root!\n");
         exit(1);
     }
-    FILE* sysmap_fp = open_file(sys_filename);
-    Map** map = parse_system_map(sysmap_fp);
-    unsigned long long init_task_addr = get_symbol_vaddr(map, "init_task"); 
+    int sysmap_fd = open_file(sys_filename);
+    Map** map = parse_system_map(sysmap_fd);
+    unsigned long long init_task_addr = get_symbol_paddr(get_symbol_vaddr(map, "init_task"));
+
+    int dump_fd = open_file(dump_filename);
+    //MAKE AN ARRAY OF HEADERS OR VARIABLE NUM OF HEADERS
+    LHdr first_lhdr;
+    LHdr second_lhdr;
+    get_lime_headers(dump_fd, &first_lhdr, &second_lhdr);
     return 0;
 }
