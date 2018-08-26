@@ -94,8 +94,11 @@ This function returns the physical address from the given virtual address
 */
 unsigned long long get_symbol_paddr(const unsigned long long vaddr) {
     //checking for potential overflow
-    if (vaddr > STATIC_OFFSET) {
+    /*if (vaddr > STATIC_OFFSET) {
         return vaddr - STATIC_OFFSET;
+    }*/
+    if (vaddr > 0xffffffff7fe00000) {
+        return vaddr - 0xffffffff7fe00000;
     }
     return -1; 
 }
@@ -125,12 +128,6 @@ void get_lime_headers(int fd, LHdr *first_lhdr, LHdr *second_lhdr) {
     if (read(fd, second_lhdr, sizeof(LHdr)) != sizeof(LHdr))
         _die("unable to read in second lime header");
 
-    printf("header:\nmagic: %x\nstart: %llx\nend: %llx", 
-    second_lhdr->magic,
-    second_lhdr->s_addr,
-    second_lhdr->e_addr
-    );
-
 }
 
 /*
@@ -151,13 +148,21 @@ void find_init_task(int fd, LHdr *first, LHdr *second, struct task_struct *ts, u
 
     off64_t block_size = first->e_addr - first->s_addr + 1;
     long long header_length = sizeof(LHdr);
-    if (lseek64(fd, block_size + header_length, SEEK_SET) != (block_size + header_length)) {
+    if (lseek64(fd, block_size + (2 * header_length), SEEK_SET) != (block_size + (2 * header_length))) {
         _die("unable to seek to correct block");
     }
 
     if (addr > l->e_addr) {
         _die("Address greater than block size");
     }
+
+    off64_t seek = lseek64(fd, addr - l->s_addr, SEEK_CUR);
+    if (seek == -1) {
+        _die("unable to seek to init_task");
+    }
+
+    // read(fd, ts, sizeof());
+
 
     //lseek to correct location
     //fill task
