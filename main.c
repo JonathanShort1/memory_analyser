@@ -255,6 +255,7 @@ void process_dump(const char*sys_filename, const char* dump_filename) {
     unsigned long long init_task_vaddr = (get_symbol_vaddr(map, "init_task"));
     unsigned long long dtb_vaddr = get_symbol_vaddr(map, "init_level4_pgt");
     printf("address of init task: %llx\n", init_task_vaddr);
+    printf("vaddr init_level4_pgt: %llx\n", dtb_vaddr);
     
     int dump_fd = open_file(dump_filename);
     //MAKE AN ARRAY OF HEADERS OR VARIABLE NUM OF HEADERS
@@ -263,7 +264,7 @@ void process_dump(const char*sys_filename, const char* dump_filename) {
     get_lime_headers(dump_fd, &first_lhdr, &second_lhdr);
     
     struct task_struct *init_task = NULL;
-    find_init_task(dump_fd, &first_lhdr, &second_lhdr, init_task, dtb_vaddr);
+    find_init_task(dump_fd, &first_lhdr, &second_lhdr, init_task, init_task_vaddr);
     // print_process_list(init_task);
 }
 int main(int argc, char** argv) {
