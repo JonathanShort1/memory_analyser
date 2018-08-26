@@ -4,6 +4,8 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <ctype.h>
+#include <getopt.h>
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/types.h>
@@ -15,12 +17,19 @@
 
 #define SYMBOL_SIZE 64
 #define SYSTEM_MAP_SIZE 100000
-#define STATIC_OFFSET 0xffff880000000000
+#define NUM_Shifts 4
 
-static int debug = 0;
+/* DEBUG FLAG */
+static int debug = 1;
 
-const char* sys_filename = "system_map";
-const char* dump_filename = "out.bin";
+const unsigned long long arrShifts[NUM_Shifts] = {
+    0xffff880000000000,
+    0xffffffff80000000, 
+    0xffffffff80000000 - 0x1000000, 
+    0xffffffff7fe00000
+};
+
+unsigned long long comm_offset = 0x608;
 
 void _debug(const char* msg) {
     if (debug) {
@@ -88,22 +97,6 @@ unsigned long long get_symbol_vaddr(Map** map, const char* symbol) {
 }
 
 /*
-This function returns the physical address from the given virtual address
-@params vaddr - the virtual address of the symbol
-@params paddr - the physical address of the symbol or -1
-*/
-unsigned long long get_symbol_paddr(const unsigned long long vaddr) {
-    //checking for potential overflow
-    /*if (vaddr > STATIC_OFFSET) {
-        return vaddr - STATIC_OFFSET;
-    }*/
-    if (vaddr > 0xffffffff7fe00000) {
-        return vaddr - 0xffffffff7fe00000;
-    }
-    return -1; 
-}
-
-/*
 This function fills two struct is data for Lime headers
 @params fp - file pointer for dump file
 @params first_LHdr - first lime header in dump
@@ -139,33 +132,56 @@ structure
 @params task_struct - the struct to fill
 @params addr - the address of the struct in the dump
 */
-void find_init_task(int fd, LHdr *first, LHdr *second, struct task_struct *ts, unsigned long long addr) {
+void find_init_task(int fd, LHdr *first, LHdr *second, struct task_struct *ts, unsigned long long vaddr) {
     // find which header to use
-    LHdr* l = first;
-    if(addr > first->e_addr) {
-        l = second;
-    }
-
-    off64_t block_size = first->e_addr - first->s_addr + 1;
     long long header_length = sizeof(LHdr);
-    if (lseek64(fd, block_size + (2 * header_length), SEEK_SET) != (block_size + (2 * header_length))) {
-        _die("unable to seek to correct block");
-    }
+    char buff[16];
 
-    if (addr > l->e_addr) {
-        _die("Address greater than block size");
-    }
+    //find the correct shift
+    unsigned long long paddr = 0;
+    for (int i = 0; i < NUM_Shifts; i++) {
+        if (vaddr >= arrShifts[i]) {
+            paddr = vaddr - arrShifts[i];
 
-    off64_t seek = lseek64(fd, addr - l->s_addr, SEEK_CUR);
-    if (seek == -1) {
-        _die("unable to seek to init_task");
-    }
+            LHdr* l = first;
+            if(paddr < first->e_addr) {
+                if (lseek64(fd, header_length, SEEK_SET) != header_length) {
+                    _die("Unable to seek to correct block");
+                }
+            } else {
+                l = second;
+                
+                off64_t block_size = first->e_addr - first->s_addr + 1;
+                if (lseek64(fd, block_size + (2 * header_length), SEEK_SET) != (block_size + (2 * header_length))) {
+                    _die("unable to seek to correct block");
+                }
+            }
 
-    // read(fd, ts, sizeof());
+            if (paddr > l->e_addr) {
+                _debug("Address greater than block size");
+            } else {
+                printf("shift: %llx\n", arrShifts[i]);
+                if (lseek64(fd, paddr - l->s_addr, SEEK_CUR) != -1) {
+                    if (lseek64(fd, comm_offset, SEEK_CUR) != -1) {
+                        if (read(fd, &buff,15) != -1) {
+                            printf("comm: %s\n", buff);
+                        } else {
+                            printf("Error: %s, erron: %d\n", strerror(errno), errno);
+                            _debug("Unable to read in the comm of task");
+                        }
+                    } else {
+                        _debug("Unable to seek to comm_offset");
+                    }
+                } else {
+                    _debug("Unable to seek to init_task with shift chosen");
+                }
 
-
-    //lseek to correct location
-    //fill task
+            }
+        } 
+    } 
+    // read in the pid and comm
+    // test for correct values 
+    //print the values
 }
 
 /*
@@ -220,20 +236,25 @@ Map** parse_system_map(int fd) {
     return map;
 }
 
+/*
+This function prints out all the processes in the task_struct list starting at
+the task_struct passed
+@params ts - the task_struct to be pased first
+*/
 void print_process_list(struct task_struct *ts) {
     
 }
-
-int main(void) {
-    if (getuid() != 0) {
-        fprintf(stderr, "Run as root!\n");
-        exit(1);
-    }
+/*
+This is the "main" processing function to process the dump
+@params sys_filename - the filename of the System.map-$(uname -r)
+@params dump_filename - the name of the memory dump
+*/
+void process_dump(const char*sys_filename, const char* dump_filename) {
     int sysmap_fd = open_file(sys_filename);
     Map** map = parse_system_map(sysmap_fd);
-    unsigned long long init_task_addr = get_symbol_paddr(get_symbol_vaddr(map, "init_task"));
-    printf("address of init task: %llx\n", init_task_addr);
-    printf("vaddr of init: %llx\n", get_symbol_vaddr(map, "init_task"));
+    unsigned long long init_task_vaddr = (get_symbol_vaddr(map, "init_task"));
+    unsigned long long dtb_vaddr = get_symbol_vaddr(map, "init_level4_pgt");
+    printf("address of init task: %llx\n", init_task_vaddr);
     
     int dump_fd = open_file(dump_filename);
     //MAKE AN ARRAY OF HEADERS OR VARIABLE NUM OF HEADERS
@@ -242,7 +263,47 @@ int main(void) {
     get_lime_headers(dump_fd, &first_lhdr, &second_lhdr);
     
     struct task_struct *init_task = NULL;
-    find_init_task(dump_fd, &first_lhdr, &second_lhdr, init_task, init_task_addr);
-    print_process_list(init_task);
+    find_init_task(dump_fd, &first_lhdr, &second_lhdr, init_task, dtb_vaddr);
+    // print_process_list(init_task);
+}
+int main(int argc, char** argv) {
+    if (getuid() != 0) {
+        fprintf(stderr, "Run as root!\n");
+        exit(1);
+    }
+
+    char* sys_filename = NULL;
+    char* dump_filename = NULL;
+
+    int sflag = 0;
+    int dflag = 0;
+
+    int opt = 0;
+
+    while((opt = getopt (argc, argv, "s:d:"))!= -1) {
+        switch(opt) {
+            case 's':
+                sflag = 1;
+                sys_filename = optarg;
+                break;
+            case 'd':
+                dflag = 1;
+                dump_filename = optarg;
+                break;
+            case ':': /* Fall through is intentional */
+            case '?': /* Fall through is intentional */
+            default:
+                printf("Invalid options or missing argument: '-%c'.\n",
+                    opt);
+                break;
+        }
+    }
+
+    if (!sflag || !dflag) {
+        _die("did not pass system file name or dump filename");
+    }
+
+    process_dump(sys_filename, dump_filename);
+    
     return 0;
 }
