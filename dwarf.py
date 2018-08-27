@@ -365,7 +365,7 @@ class DWARFParser(object):
 
     def print_output(self):
         self.finalize()
-        # print "linux_types = {"
+        print "linux_types = {"
         print "{"
         for t in self.all_vtypes:
             print "  '%s': [ size : %#x, {" % (t, self.all_vtypes[t][0])
@@ -374,10 +374,10 @@ class DWARFParser(object):
             print "}],"
         print "}"
         
-        # print "linux_gvars = {"
-        # for v in sorted(self.all_vars, key = lambda v: self.all_vars[v][0]):
-        #     print "  '%s': [%#010x, %s]," % (v, self.all_vars[v][0], self.all_vars[v][1])
-        # print "}"
+        print "linux_gvars = {"
+        for v in sorted(self.all_vars, key = lambda v: self.all_vars[v][0]):
+            print "  '%s': [%#010x, %s]," % (v, self.all_vars[v][0], self.all_vars[v][1])
+        print "}"
 
     def print_obj(self):
         self.finalize()

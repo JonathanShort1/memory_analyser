@@ -11,7 +11,8 @@ def main(filename):
     print "size: %#d, %#x" % (size, size)
     print "pid offset: %#d, %#x" % (task_struct[1]["pid"][0], task_struct[1]["pid"][0])
     print "comm offset: %#d, %#x" % (task_struct[1]["comm"][0], task_struct[1]["comm"][0])
-    
+    print "parent offset: %#d, %#x" % (task_struct[1]["parent"][0],task_struct[1]["parent"][0])
+    print "childlist off: %#d, %#x" % (task_struct[1]["children"][0],task_struct[1]["children"][0])
     
 
 

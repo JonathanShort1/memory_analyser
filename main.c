@@ -8,6 +8,7 @@
 #include <getopt.h>
 #include <fcntl.h>
 #include <errno.h>
+#include <stdarg.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -22,7 +23,7 @@
 /* DEBUG FLAG */
 static int debug = 1;
 
-unsigned long long STATIC_SHIFT = 0;
+off64_t STATIC_SHIFT = 0;
 const unsigned long long arrShifts[NUM_Shifts] = {
   0xffff880000000000,
   0xffffffff80000000, 
@@ -30,31 +31,62 @@ const unsigned long long arrShifts[NUM_Shifts] = {
   0xffffffff7fe00000
 };
 
-unsigned long long comm_offset = 0x608;
-unsigned long long pid_offset = 0x450;
+const off64_t comm_offset = 0x608;
+const off64_t pid_offset = 0x450;
+const off64_t children_offset = 0x470;
 const char* INIT_TASK = "init_task";
 // move this to header so can do defines on kerenl version
 const char* INIT_PGT = "init_level4_pgt";
 const char* INIT_TASK_COMM = "swapper/0";
 
-
-
-void _debug(const char* msg) {
+void _debug(const char *format,...) {
   if (debug) {
-    fprintf(stdout, "DEBUG: %s\n", msg);
+    va_list va;
+    va_start(va,format);
+    vfprintf(stdout,format,va);
+    va_end(va);
+    printf("\n");
   }
 }
 
-void _die(const char* msg) {
-  fprintf(stderr, "Error: %s\n", msg);
+void _die(const char *format,...) {
+  va_list va;
+  va_start(va,format);
+  vfprintf(stderr,format,va);
+  va_end(va);
+  printf("\n");
   exit(1);
 }
 
+/* NEEDS TO BE MOVED*/
+LHdr_list* list_add(LHdr_list *l, LHdr *h) {
+  LHdr_list* new_head = (LHdr_list*) malloc(sizeof(LHdr_list));
+  new_head->header = h;
+  new_head->next = l;
+  l = new_head;
+  return l;
+}
 
-/*
-This function opens a file and returns a file descriptor
-@param filename - char* to name of file
-@return a FILE descriptor to the file
+/**
+ * This function allocates memory for a task_struct
+ * @params ts - a pointer to a task_struct
+*/
+void task_struct_init(struct task_struct *ts) {
+  ts = malloc(sizeof(struct task_struct));
+}
+
+/**
+ * This function allocates memory to a list_head
+ * @params ts - a pointed to a task_struct
+*/
+void list_head_init(struct task_struct *ts) {
+  ts->children = malloc(sizeof(struct list_head));
+}
+
+/**
+ * This function opens a file and returns a file descriptor
+ * @param filename - char* to name of file
+ * @return a FILE descriptor to the file
 */
 int open_file(const char* filename) {
   int fd;
@@ -66,34 +98,34 @@ int open_file(const char* filename) {
     exit(1);
   }
   
-  _debug("Succesful open of file");
+  _debug("DEBUG: Succesful open of file: %s", filename);
 
   return fd;
 }
 
-/*
-This function returns the length of a file using fseek()
-@params fd - an open descriptor
-@returns n or 0
+/**
+ * This function returns the length of a file using fseek()
+ * @params fd - an open descriptor
+ * @returns n or 0
 */
 off_t get_file_length(int fd) {
   lseek(fd, 0, SEEK_SET);
   off_t size = lseek(fd, 0, SEEK_END);
   if(size == (off_t) -1) {
-    _die("Cannot seek");
+    _die("ERROR: Cannot seek to end of file");
   }
   lseek(fd, 0, SEEK_SET);
     
-  _debug("found size of file");
+  _debug("DEBUG: found size of file");
   
   return size;
 }
 
-/* 
-This function returns the associated virtual address of a symbol 
-@param map - the map to search 
-@param symbol - the symbol to search for
-@returns Either the address if found or -1 if sysmbol isn't present
+/**
+ * This function returns the associated virtual address of a symbol 
+ * @param map - the map to search 
+ * @param symbol - the symbol to search for
+ * @returns Either the address if found or -1 if sysmbol isn't present
 */
 unsigned long long get_symbol_vaddr(Map** map, const char* symbol) {
   for (int i = 0; i < SYSTEM_MAP_SIZE; i++) {
@@ -104,43 +136,128 @@ unsigned long long get_symbol_vaddr(Map** map, const char* symbol) {
   return -1;
 }
 
-/*
-This function fills two struct is data for Lime headers
-@params fp - file pointer for dump file
-@params first_LHdr - first lime header in dump
-@params second_LHdr - second lime header in dump
-@returns fills the above structs or they return null on failure
+/**
+ * This function fills a linked list of lime headers with data
+ * @params fp - file pointer for dump file
+ * @return l - the linked list of headers
 */
-void get_lime_headers(int fd, LHdr *first_lhdr, LHdr *second_lhdr) {
+LHdr_list* get_lime_headers(int fd) {
+  LHdr_list *l = calloc(1, sizeof(LHdr_list));
+  unsigned long long fileSize = get_file_length(fd);
+
   if (lseek64(fd, 0, SEEK_SET) != 0) 
     _die("Unable to seek to offset 0 in dump");
 
-  if (read(fd, first_lhdr, sizeof(LHdr)) != sizeof(LHdr))
-    _die("unable to read in first lime header");
-  
-  off64_t block_size = first_lhdr->e_addr - first_lhdr->s_addr + 1;
+  unsigned long long bytes_read = 0;
+  int header_count = 0;
+  off64_t block_size = 0;
+  off64_t seek;
+  while (bytes_read < fileSize - 1) {
+    LHdr *header = malloc(sizeof(LHdr));
+    if (read(fd, header, sizeof(LHdr)) != sizeof(LHdr))
+      _die("unable to read in lime header: %d", header_count);
+    
+    block_size = header->e_addr - header->s_addr + 1;
+    seek = lseek64(fd, block_size, SEEK_CUR);
+    if (seek == -1) {
+      _die("unable to seek to next header"); 
+    }
 
-  off64_t seek = lseek64(fd, block_size, SEEK_CUR); 
-  long header_length = sizeof(LHdr);
-  if (seek != block_size + header_length) {
-    _die("unable to seek to the second header"); 
+    l = list_add(l, header);
+    header_count += 1;
+    bytes_read = seek;
   }
 
-  if (read(fd, second_lhdr, sizeof(LHdr)) != sizeof(LHdr))
-    _die("unable to read in second lime header");
-
+  return l;
 }
 
-/*
-This function takes the address of init_task and fills a task_struct
-structure
-@params fd - file descriptor of dump
-@params first - first lime header in dump
-@params second - second line header
-@params task_struct - the struct to fill
-@params addr - the address of the struct in the dump
+/**
+ * This function gets the attr of the task_struct required from the dump
+ * (currently assuming seek pointer is a base of task_struct)
+ * Assuming task_struct does not go over lime block boundaries
+ * @params fd - file descriptor or dump file
+ * @params curr - task struct being processed
+ * @params offset - offset of attr to read
+ * @params length - length of attr to read  
 */
-void find_init_task(int fd, LHdr *first, LHdr *second, struct task_struct *ts, unsigned long long vaddr) {
+void get_task_attr(int fd, struct task_struct* curr, off64_t offset, int length, int attr) {
+  lseek(fd, 0, SEEK_CUR);
+  if (lseek64(fd, offset, SEEK_CUR) != -1) {
+    int num_read = 0;
+    switch(attr) {
+      case TASK_COMM_ID:
+        num_read = read(fd, curr->comm, TASK_COMM_LEN);
+        break;
+      case TASK_PID_ID:
+        num_read = read(fd, &curr->pid, sizeof(int));
+        break;
+      case TASK_CHILD_ID:
+        num_read = read(fd, curr->children, sizeof(struct list_head));
+        break;
+      default:
+        _die("wrong attr ID provided: %s", attr);
+    }
+    if (num_read == -1) {
+      printf("ERROR: %s, %d\n", strerror(errno), errno);
+      _die("Unable to read attr_id: %d", attr);
+    }
+    lseek64(fd, -(offset + length), SEEK_CUR);
+  } else {
+    _die("ERROR: Cannot seek to offset: %llx (attr_id: %d)", offset, attr);
+  }
+}
+
+/**
+ * This function finds the correct lime block for the paddr
+ * And seeks the dump file pointer to the start of that block
+ * (seeks backwards as blocks are linked in reverse order)
+ * @params fd - file descriptor of dump
+ * @params list - list of lime headers
+ * @params paddr - physical address to find in dump blocks
+*/
+LHdr* get_correct_header_and_seek(int fd, LHdr_list *list, unsigned long long paddr) {
+  if (lseek64(fd, 0, SEEK_END) == -1) {
+    _die("Unable to seek to end of dump");
+  }
+
+  int succFlag = 0;
+  int header_length = sizeof(LHdr);
+  unsigned long long blockSize = 0;
+  LHdr_list *node  = list;
+  while (node->next) {
+    if (paddr < node->header->e_addr) {
+      succFlag = 1;
+      break;
+    }
+    blockSize = node->header->e_addr - node->header->s_addr + 1;
+    if (lseek64(fd, -(header_length + blockSize),SEEK_CUR) == -1) {
+      _die("unable to seek to next block header");
+    }
+    node = node->next;
+  }
+  if (!succFlag) {
+    _debug("unable to find correct block in dump for address: %llx", paddr);
+    return NULL;
+  }
+
+  //seek to header of header
+  blockSize = node->header->e_addr - node->header->s_addr + 1;
+  if (lseek64(fd, -blockSize, SEEK_CUR) == -1) {
+    _die("unable to seek to start of desired block");
+  }
+  return node->header;
+}
+
+/**
+ * This function takes the address of init_task and fills a task_struct
+ * structure
+ * @params fd - file descriptor of dump
+ * @params first - first lime header in dump
+ * @params second - second line header
+ * @params task_struct - the struct to fill
+ * @params addr - the address of the struct in the dump
+*/
+void find_init_task(int fd, LHdr_list *list, struct task_struct *ts, unsigned long long vaddr) {
   int successShiftFlag = 0;
   long long header_length = sizeof(LHdr);
 
@@ -150,34 +267,19 @@ void find_init_task(int fd, LHdr *first, LHdr *second, struct task_struct *ts, u
     if (vaddr >= arrShifts[i]) {
       paddr = vaddr - arrShifts[i];
 
-      LHdr* l = first;
-      if(paddr < first->e_addr) {
-        if (lseek64(fd, header_length, SEEK_SET) != header_length) {
-          _die("Unable to seek to correct block");
-        }
-      } else {
-        l = second;
-        
-        off64_t block_size = first->e_addr - first->s_addr + 1;
-        if (lseek64(fd, block_size + (2 * header_length), SEEK_SET) != (block_size + (2 * header_length))) {
-          _die("unable to seek to correct block");
-        }
-      }
-
-      if (paddr > l->e_addr) {
-        _debug("Address greater than block size");
-      } else {
-        printf("shift: %llx\n", arrShifts[i]);
+      LHdr* l = get_correct_header_and_seek(fd, list, paddr);
+     
+      if (l && paddr <= l->e_addr) {
         if (lseek64(fd, paddr - l->s_addr, SEEK_CUR) != -1) {
           if (lseek64(fd, comm_offset, SEEK_CUR) != -1) {
             if (read(fd, ts->comm, TASK_COMM_LEN -1) != -1) {
               if (strcmp(ts->comm, INIT_TASK_COMM) == 0) {
+                _debug("SUCESS: found a viable static shift");
                 successShiftFlag = 1;
                 STATIC_SHIFT = arrShifts[i];
                 break; // found correct shift
               }
             } else {
-              printf("Error: %s, erron: %d\n", strerror(errno), errno);
               _debug("Unable to read in the comm of task");
             }
           } else {
@@ -186,32 +288,72 @@ void find_init_task(int fd, LHdr *first, LHdr *second, struct task_struct *ts, u
         } else {
           _debug("Unable to seek to init_task with shift chosen");
         }
+      } else {
+        _debug("address to big for block chosen");
       }
     }
   }
   // fill rest of task if found 
   if (successShiftFlag) {
-      if (lseek64(fd, pid_offset -(comm_offset + TASK_COMM_LEN), SEEK_CUR) != -1) {
-          if(read(fd, &ts->pid, sizeof(int))!= -1) {
-            printf("pid: %d\n", ts->pid);
-          } else {
-          _die("Could not read init_task pid");
-          }
+      if (lseek64(fd, -(comm_offset + TASK_COMM_LEN), SEEK_CUR) != -1) {
+        // find and read pid
+        get_task_attr(fd, ts, pid_offset, sizeof(int), TASK_PID_ID);
+
+        //find and read children list_head
+        list_head_init(ts);
+        get_task_attr(fd, ts, children_offset, sizeof(list_head), TASK_CHILD_ID);
       } else {
-        _die("could not seek back to init_task pid offset");
+        _die("could not seek back to statr of task struct");
       }
     } else {
       _die("Could not find a successful shift!");
     }
-
-  // read in the pid and comm
-  // test for correct values 
-  //print the values
 }
 
-/*
-This function parses the system map file and returns a pointer 
-to an array of symbols
+/**
+ * This function translates a virtual address to a physical address
+ * (takes longer if static offset is not set)
+ * (only works for nokaslr sofar)
+ * @params vaddr - the virtual address to be translated
+*/
+off64_t paddr_translation(off64_t vaddr) {
+  if (STATIC_SHIFT) {
+    if(vaddr >= STATIC_SHIFT) {
+      return vaddr - STATIC_SHIFT;
+    }
+    _die("Translation of addr: %llx with shift: %lxx could cause overflow", vaddr, STATIC_SHIFT);
+  } else {
+    //TODO change this to incorp some of find_task
+    _die("STATIC offset not set");
+  }
+  return -1;
+}
+
+/**
+ * This function seeks to the base of the given task
+ * @params fd - file descriptor of dump file
+ * @params vaddr - virtual address of base 
+*/
+void seek_to_base_of_task(int fd, off64_t vaddr) {
+  off64_t paddr = paddr_translation(vaddr);
+
+}
+
+/**
+ * This function prints out all the processes in the task_struct list starting at
+ * the task_struct passed
+ * @params ts - the task_struct to be pased first
+*/
+void print_process_list(int fd, struct task_struct *init) {
+    printf("comm: %s - pid: %d - child: %p\n", init->comm, init->pid, init->children);
+    struct task_struct* curr = init;
+
+    seek_to_base_of_task(fd, curr->children->next);
+}
+
+/**
+ * This function parses the system map file and returns a pointer 
+ * to an array of symbols
 */
 Map** parse_system_map(int fd) {
   off_t fileSize = get_file_length(fd);
@@ -261,18 +403,10 @@ Map** parse_system_map(int fd) {
   return map;
 }
 
-/*
-This function prints out all the processes in the task_struct list starting at
-the task_struct passed
-@params ts - the task_struct to be pased first
-*/
-void print_process_list(struct task_struct *ts) {
-    
-}
-/*
-This is the "main" processing function to process the dump
-@params sys_filename - the filename of the System.map-$(uname -r)
-@params dump_filename - the name of the memory dump
+/**
+ * This is the "main" processing function to process the dump
+ * @params sys_filename - the filename of the System.map-$(uname -r)
+ * @params dump_filename - the name of the memory dump
 */
 void process_dump(const char*sys_filename, const char* dump_filename) {
   int sysmap_fd = open_file(sys_filename);
@@ -282,20 +416,19 @@ void process_dump(const char*sys_filename, const char* dump_filename) {
   
   int dump_fd = open_file(dump_filename);
   //TODO MAKE AN ARRAY OF HEADERS OR VARIABLE NUM OF HEADERS
-  LHdr first_lhdr;
-  LHdr second_lhdr;
-  get_lime_headers(dump_fd, &first_lhdr, &second_lhdr);
+  LHdr_list *headerList = get_lime_headers(dump_fd);
   
-  struct task_struct *init_task = malloc(sizeof(struct task_struct));
-  find_init_task(dump_fd, &first_lhdr, &second_lhdr, init_task, init_task_vaddr);
-  // print_process_list(init_task);
+  struct task_struct init_task;
+  task_struct_init(&init_task);
+  find_init_task(dump_fd, headerList, &init_task, init_task_vaddr);
+  //print_process_list(dump_fd, &init_task);
 }
 
-/*
-This functions handles command line arguments 
-
-usage: 
-  sudo ./main -s /PathTo/System.map-$(uname -r) -d /PathTo/memoryDump
+/**
+ * This functions handles command line arguments
+ * 
+ * usage: 
+ *   sudo ./main -s /PathTo/System.map-$(uname -r) -d /PathTo/memoryDump
 */
 int main(int argc, char** argv) {
   if (getuid() != 0) {
