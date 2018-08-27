@@ -34,7 +34,9 @@ const unsigned long long arrShifts[NUM_Shifts] = {
 const off64_t comm_offset = 0x608;
 const off64_t pid_offset = 0x450;
 const off64_t children_offset = 0x470;
+const off64_t tasks_offset = 0x358;
 const char* INIT_TASK = "init_task";
+
 // move this to header so can do defines on kerenl version
 const char* INIT_PGT = "init_level4_pgt";
 const char* INIT_TASK_COMM = "swapper/0";
@@ -59,7 +61,14 @@ void _die(const char *format,...) {
 }
 
 /* NEEDS TO BE MOVED*/
-LHdr_list* list_add(LHdr_list *l, LHdr *h) {
+/**
+ * This function adds to the head of a linkedlist of lime headers
+ * These headers are used to seek to the correct block (and address) in the dump file
+ * @params l - the head of the list
+ * @params h - the lime header to be added to the list
+ * @returns l - the updated head of the list
+*/
+LHdr_list* header_list_add(LHdr_list *l, LHdr *h) {
   LHdr_list* new_head = (LHdr_list*) malloc(sizeof(LHdr_list));
   new_head->header = h;
   new_head->next = l;
@@ -75,13 +84,13 @@ struct task_struct* task_struct_init() {
   return malloc(sizeof(struct task_struct));
 }
 
-/**
- * This function allocates memory to a list_head
- * @params ts - a pointed to a task_struct
-*/
-void list_head_init(struct task_struct *ts) {
-  ts->children = malloc(sizeof(struct list_head));
-}
+// /**
+//  * This function allocates memory to a list_head
+//  * @params ts - a pointed to a task_struct
+// */
+// void list_head_init(struct task_struct *ts) {
+//   ts->tasks = malloc(sizeof(struct list_head));
+// }
 
 /**
  * This function opens a file and returns a file descriptor
@@ -163,7 +172,7 @@ LHdr_list* get_lime_headers(int fd) {
       _die("unable to seek to next header"); 
     }
 
-    l = list_add(l, header);
+    l = header_list_add(l, header);
     header_count += 1;
     bytes_read = seek;
   }
@@ -189,10 +198,10 @@ void get_task_attr(int fd, struct task_struct* curr, off64_t offset, int length,
         num_read = read(fd, curr->comm, TASK_COMM_LEN);
         break;
       case TASK_PID_ID:
-        num_read = read(fd, &curr->pid, sizeof(int));
+        num_read = read(fd, &curr->pid, TASK_PID_LEN);
         break;
-      case TASK_CHILD_ID:
-        num_read = read(fd, curr->children, sizeof(struct list_head));
+      case TASK_TASKS_ID:
+        num_read = read(fd, &curr->tasks, TASK_TASKS_LEN);
         break;
       default:
         _die("wrong attr ID provided: %s", attr);
@@ -296,11 +305,11 @@ void find_init_task(int fd, LHdr_list *list, struct task_struct *ts, unsigned lo
   if (successShiftFlag) {
       if (lseek64(fd, -(comm_offset + TASK_COMM_LEN), SEEK_CUR) != -1) {
         // find and read pid
-        get_task_attr(fd, ts, pid_offset, sizeof(int), TASK_PID_ID);
+        get_task_attr(fd, ts, pid_offset, TASK_PID_LEN, TASK_PID_ID);
 
         //find and read children list_head
-        list_head_init(ts);
-        get_task_attr(fd, ts, children_offset, sizeof(list_head), TASK_CHILD_ID);
+        //list_head_init(ts);
+        get_task_attr(fd, ts, tasks_offset, TASK_TASKS_LEN, TASK_TASKS_ID);
       } else {
         _die("could not seek back to statr of task struct");
       }
@@ -348,9 +357,9 @@ void seek_to_base_of_task(int fd, LHdr_list *list, unsigned long long vaddr) {
  * @params ts - the task_struct to be pased first
 */
 void print_process_list(int fd, LHdr_list *list, struct task_struct *init) {
-  printf("comm: %s - pid: %d - child: %p\n", init->comm, init->pid, init->children);
+  printf("comm: %s - pid: %d - child: %p\n", init->comm, init->pid, init->tasks);
 
-  seek_to_base_of_task(fd, list, init->children->next);
+  seek_to_base_of_task(fd, list, init->tasks.next);
 
   struct task_struct *next = task_struct_init();
   get_task_attr(fd, next, comm_offset, TASK_COMM_LEN, TASK_COMM_ID);

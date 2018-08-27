@@ -8,12 +8,12 @@ def main(filename):
     task_struct = data["all_vtypes"]["task_struct"]
     size = task_struct[0]
 
-    print "size: %#d, %#x" % (size, size)
-    print "pid offset: %#d, %#x" % (task_struct[1]["pid"][0], task_struct[1]["pid"][0])
-    print "comm offset: %#d, %#x" % (task_struct[1]["comm"][0], task_struct[1]["comm"][0])
-    print "parent offset: %#d, %#x" % (task_struct[1]["parent"][0],task_struct[1]["parent"][0])
-    print "childlist off: %#d, %#x" % (task_struct[1]["children"][0],task_struct[1]["children"][0])
-    
+    print "size: %#x" % size
+    print "pid offset: %#x" % task_struct[1]["pid"][0]
+    print "comm offset: %#x" %  task_struct[1]["comm"][0]
+    print "parent offset: %#x" % task_struct[1]["parent"][0]
+    print "childlist off: %#x" % task_struct[1]["children"][0]
+    print "task off: %#x" % task_struct[1]["tasks"][0]
 
 
 

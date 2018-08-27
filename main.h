@@ -2,9 +2,14 @@
 #define _MAIN_H
 
 #define TASK_COMM_LEN 16
+#define TASK_PID_LEN sizeof(int)
+#define TASK_TASKS_LEN sizeof(struct list_head)
+
 #define TASK_COMM_ID 0
 #define TASK_PID_ID 1
-#define TASK_CHILD_ID 2
+#define TASK_TASKS_ID 2
+
+#include "list.h"
 
 /**
  * This struct is used to parse the System.map-X file
@@ -14,8 +19,6 @@ typedef struct symbol {
     unsigned long long vaddr;
     char symbol[256];
 } Map;
-
-
 
 /**
  * This struct is for the lime header format
@@ -35,18 +38,18 @@ typedef struct lime_header_list {
 	struct lime_header_list* next;
 } LHdr_list;
 
-LHdr_list* list_add(LHdr_list *list, LHdr *lhdr);
+LHdr_list* header_list_add(LHdr_list *list, LHdr *lhdr);
 
 
-/**
- * This struct is to represent the child doubly linked list 
- * (only parts of it)
- */
+// /**
+//  * This struct is to represent the child doubly linked list 
+//  * (only parts of it)
+//  */
 
-struct list_head {
-	struct task_struct* next;
-	struct task_struct* prev;
-} list_head;
+// struct list_head {
+// 	struct task_struct* next;
+// 	struct task_struct* prev;
+// } list_head;
 
 /*
  * This struct is for part of the task_struct
@@ -54,7 +57,8 @@ struct list_head {
 struct task_struct {
 	pid_t pid;
 	char comm[TASK_COMM_LEN];
-	struct list_head* children; 
+	// struct list_head* children; 
+	struct list_head tasks;
 } task_struct;
 
 #endif
