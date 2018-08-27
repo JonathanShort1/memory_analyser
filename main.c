@@ -20,10 +20,21 @@
 #define SYSTEM_MAP_SIZE 100000
 #define NUM_Shifts 4
 
+// #define PAGE_MAP_MASK 0b 0000 0000 0000 0000 0000 0000 0000 000 0011 1111 1110 0000 0000 0000 0000 0000
+#define PAGE_MAP_MASK 0x0000FF8000000000
+#define PDPT_MASK 0x0000007FC0000000
+#define PDE_MASK 0x000000003FE00000
+#define PTE_MASK 0x00000000008FF000
+#define PAGE_OFFSET_MASK 0x0000000000000FFF
+#define PAGE_ADDRESS 1
+#define PAGE_TABLE_ENTRY 0
+
 /* DEBUG FLAG */
 static int debug = 1;
 
-off64_t STATIC_SHIFT = 0;
+unsigned long long STATIC_SHIFT = 0;
+unsigned long long PA_MAX = 0;
+unsigned long long PGT_PADDR = 0;
 const unsigned long long arrShifts[NUM_Shifts] = {
   0xffff880000000000,
   0xffffffff80000000, 
@@ -84,14 +95,6 @@ struct task_struct* task_struct_init() {
   return malloc(sizeof(struct task_struct));
 }
 
-// /**
-//  * This function allocates memory to a list_head
-//  * @params ts - a pointed to a task_struct
-// */
-// void list_head_init(struct task_struct *ts) {
-//   ts->tasks = malloc(sizeof(struct list_head));
-// }
-
 /**
  * This function opens a file and returns a file descriptor
  * @param filename - char* to name of file
@@ -147,6 +150,10 @@ unsigned long long get_symbol_vaddr(Map** map, const char* symbol) {
 
 /**
  * This function fills a linked list of lime headers with data
+ * It seeks to the end of the dump file without resetting it 
+ * 
+ * It also sets PA_MAX to the e_addr of the last header
+ * 
  * @params fp - file pointer for dump file
  * @return l - the linked list of headers
 */
@@ -176,6 +183,9 @@ LHdr_list* get_lime_headers(int fd) {
     header_count += 1;
     bytes_read = seek;
   }
+
+  // set upper physical address to end of last block read
+  PA_MAX = l->header->e_addr;
 
   return l;
 }
@@ -319,20 +329,65 @@ void find_init_task(int fd, LHdr_list *list, struct task_struct *ts, unsigned lo
 }
 
 /**
- * This function translates a virtual address to a physical address
- * (takes longer if static offset is not set)
- * (only works for nokaslr sofar)
- * @params vaddr - the virtual address to be translated
+ * This function will return the value in a page table/map/directory
+ * (program will die on failure)
+ * @params fd - file descriptor of dump file
+ * @params base_addr - base address of page table
+ * @params index - the index within the page table
+ * @returns - the value at the page table
 */
-off64_t paddr_translation(off64_t vaddr) {
-  if (STATIC_SHIFT) {
-    if(vaddr >= STATIC_SHIFT) {
-      return vaddr - STATIC_SHIFT;
-    }
-    _die("Translation of addr: %llx with shift: %lxx could cause overflow", vaddr, STATIC_SHIFT);
+unsigned long long retreive_page_table_addr(int fd, unsigned long long base_addr, unsigned int index, int pte_flag) {
+  if (lseek64(fd, base_addr + (8 * index), SEEK_SET) == -1) {
+    _die("unable to seek to index %llx of table: %llx", index, base_addr);
+  }
+
+  unsigned long long paddr_next = 0;
+  if (pte_flag) {
+    if (read(fd, &paddr_next,sizeof(unsigned long long)) == -1) {
+      _die("unable to read in address at %llcx", base_addr + index);
+     }
   } else {
-    //TODO change this to incorp some of find_task
-    _die("STATIC offset not set");
+     if (read(fd, &paddr_next,sizeof(unsigned int)) == -1) {
+      _die("unable to read in value at %llcx", base_addr + index);
+     }
+  }
+  return paddr_next;
+}
+
+/**
+ * This function translates a virtual address to a physical address
+ * (Cannot be used if static offset and PA_MAX is not set - use get_lime_headers)
+ * (only works for nokaslr so far)
+ * SAFE TO SEEK
+ * @params fd - file descriptor
+ * @params vaddr - the virtual address to be translated
+ * @returns paddr - the physical address or -1 on failure 
+*/
+off64_t paddr_translation(int fd,  unsigned long long vaddr) {
+  if (!STATIC_SHIFT || !PA_MAX){
+    _die("Must call get_lime_headers before using this function");
+  }
+
+  /* Is address in directly mapped region */
+  if (STATIC_SHIFT < vaddr && vaddr <= STATIC_SHIFT + PA_MAX) {
+    return vaddr - STATIC_SHIFT;
+  } else {
+    /* Use page tables */
+    vaddr = get_symbol_vaddr(map, INIT_PGT);
+    unsigned int pa_pgt_offset = (vaddr & PAGE_MAP_MASK) >> 39;
+    unsigned long long pa_pdpt = retreive_page_table_addr(fd, PGT_PADDR, pa_pgt_offset, PAGE_TABLE_ENTRY);
+    unsigned int pa_pdpt_offset = (vaddr & PDPT_MASK) >> 30; 
+    unsigned long long pa_pde = retreive_page_table_addr(fd, pa_pdpt, pa_pdpt_offset, PAGE_TABLE_ENTRY);
+    unsigned int pa_pde_offset = (vaddr & PDE_MASK) >> 21;
+    unsigned long long pa_pte = retreive_page_table_addr(fd, pa_pde, pa_pde_offset, PAGE_TABLE_ENTRY);
+    unsigned int pa_pte_offset = (vaddr & PTE_MASK) >> 12;
+    unsigned long long pa_page = retreive_page_table_addr(fd, pa_pte, pa_pte_offset, PAGE_ADDRESS);
+    unsigned int page_offset = vaddr & PAGE_OFFSET_MASK;
+    printf("pa_pgt_offset: %x\n", pa_pgt_offset);
+    printf("pa_pdpt: %llx\n", pa_pdpt);
+    printf("pa_pde: %llx\n", pa_pde);
+    printf("pa_pte: %llx\n", pa_pte);
+    printf("pa_page: %llx\n", pa_page);
   }
   return -1;
 }
@@ -343,11 +398,16 @@ off64_t paddr_translation(off64_t vaddr) {
  * @params vaddr - virtual address of base 
 */
 void seek_to_base_of_task(int fd, LHdr_list *list, unsigned long long vaddr) {
-  unsigned long long paddr = paddr_translation(vaddr);
-  LHdr *header = get_correct_header_and_seek(fd, list, paddr);
-  
-  if (lseek64(fd, paddr - header->s_addr, SEEK_CUR) == -1) {
-    _die("could not seek to base of task");
+  unsigned long long paddr = paddr_translation(fd, vaddr);
+
+  if (paddr != -1ULL) {
+    LHdr *header = get_correct_header_and_seek(fd, list, paddr);
+      
+    if (lseek64(fd, paddr - header->s_addr, SEEK_CUR) == -1) {
+      _die("could not seek to base of task");
+    }
+  } else {
+    _debug("couldn't find virtual address");
   }
 }
 
@@ -357,13 +417,19 @@ void seek_to_base_of_task(int fd, LHdr_list *list, unsigned long long vaddr) {
  * @params ts - the task_struct to be pased first
 */
 void print_process_list(int fd, LHdr_list *list, struct task_struct *init) {
-  printf("comm: %s - pid: %d - child: %p\n", init->comm, init->pid, init->tasks);
+  printf("\n\ncomm: %s - pid: %d - child: %p\n", init->comm, init->pid, init->tasks);
 
-  seek_to_base_of_task(fd, list, init->tasks.next);
+  seek_to_base_of_task(fd, list, list_entry(init->tasks.next, struct task_struct, tasks));
 
   struct task_struct *next = task_struct_init();
   get_task_attr(fd, next, comm_offset, TASK_COMM_LEN, TASK_COMM_ID);
 
+  /*struct list_head *pos;
+  struct task_struct *curr;
+  list_for_each(pos, &init->tasks) {
+    curr = list_entry(pos, struct task_struct, tasks);
+    printf("comm: %s", curr->comm);
+  }*/
   printf("task: %s\n", next->comm);
 }
 
@@ -425,18 +491,25 @@ Map** parse_system_map(int fd) {
  * @params dump_filename - the name of the memory dump
 */
 void process_dump(const char*sys_filename, const char* dump_filename) {
+  /* open map file and load into array */
   int sysmap_fd = open_file(sys_filename);
   Map** map = parse_system_map(sysmap_fd);
-  unsigned long long init_task_vaddr = (get_symbol_vaddr(map, INIT_TASK));
-  // unsigned long long pgt_vaddr = get_symbol_vaddr(map, INIT_PGT);
   
+  /* open dump file and create linked list of lime headers*/
   int dump_fd = open_file(dump_filename);
-  //TODO MAKE AN ARRAY OF HEADERS OR VARIABLE NUM OF HEADERS
   LHdr_list *headerList = get_lime_headers(dump_fd);
   
+  /* find and fill the init_task task_struct */
   struct task_struct init_task;
   task_struct_init(&init_task);
+  unsigned long long init_task_vaddr = (get_symbol_vaddr(map, INIT_TASK));
   find_init_task(dump_fd, headerList, &init_task, init_task_vaddr);
+  
+  /* set the physical address of the page tables */
+  unsigned long long pgt_vaddr = get_symbol_vaddr(map, INIT_PGT);
+  PGT_PADDR = pgt_vaddr - STATIC_SHIFT;
+
+  /* printf the process list */
   print_process_list(dump_fd, headerList, &init_task);
 }
 
