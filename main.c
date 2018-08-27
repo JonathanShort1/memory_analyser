@@ -71,8 +71,8 @@ LHdr_list* list_add(LHdr_list *l, LHdr *h) {
  * This function allocates memory for a task_struct
  * @params ts - a pointer to a task_struct
 */
-void task_struct_init(struct task_struct *ts) {
-  ts = malloc(sizeof(struct task_struct));
+struct task_struct* task_struct_init() {
+  return malloc(sizeof(struct task_struct));
 }
 
 /**
@@ -259,7 +259,6 @@ LHdr* get_correct_header_and_seek(int fd, LHdr_list *list, unsigned long long pa
 */
 void find_init_task(int fd, LHdr_list *list, struct task_struct *ts, unsigned long long vaddr) {
   int successShiftFlag = 0;
-  long long header_length = sizeof(LHdr);
 
   //find the correct shift
   unsigned long long paddr = 0;
@@ -334,9 +333,13 @@ off64_t paddr_translation(off64_t vaddr) {
  * @params fd - file descriptor of dump file
  * @params vaddr - virtual address of base 
 */
-void seek_to_base_of_task(int fd, off64_t vaddr) {
-  off64_t paddr = paddr_translation(vaddr);
-
+void seek_to_base_of_task(int fd, LHdr_list *list, unsigned long long vaddr) {
+  unsigned long long paddr = paddr_translation(vaddr);
+  LHdr *header = get_correct_header_and_seek(fd, list, paddr);
+  
+  if (lseek64(fd, paddr - header->s_addr, SEEK_CUR) == -1) {
+    _die("could not seek to base of task");
+  }
 }
 
 /**
@@ -344,11 +347,15 @@ void seek_to_base_of_task(int fd, off64_t vaddr) {
  * the task_struct passed
  * @params ts - the task_struct to be pased first
 */
-void print_process_list(int fd, struct task_struct *init) {
-    printf("comm: %s - pid: %d - child: %p\n", init->comm, init->pid, init->children);
-    struct task_struct* curr = init;
+void print_process_list(int fd, LHdr_list *list, struct task_struct *init) {
+  printf("comm: %s - pid: %d - child: %p\n", init->comm, init->pid, init->children);
 
-    seek_to_base_of_task(fd, curr->children->next);
+  seek_to_base_of_task(fd, list, init->children->next);
+
+  struct task_struct *next = task_struct_init();
+  get_task_attr(fd, next, comm_offset, TASK_COMM_LEN, TASK_COMM_ID);
+
+  printf("task: %s\n", next->comm);
 }
 
 /**
@@ -421,7 +428,7 @@ void process_dump(const char*sys_filename, const char* dump_filename) {
   struct task_struct init_task;
   task_struct_init(&init_task);
   find_init_task(dump_fd, headerList, &init_task, init_task_vaddr);
-  //print_process_list(dump_fd, &init_task);
+  print_process_list(dump_fd, headerList, &init_task);
 }
 
 /**
