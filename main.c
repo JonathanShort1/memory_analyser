@@ -337,6 +337,10 @@ void find_init_task(int fd, LHdr_list *list, struct task_struct *ts, unsigned lo
  * @returns - the value at the page table
 */
 unsigned long long retreive_page_table_addr(int fd, unsigned long long base_addr, unsigned int index, int pte_flag) {
+  if (lseek64(fd, 0, SEEK_SET) == -1) {
+    _die("unable to seek to beginning of file");
+  }
+  
   if (lseek64(fd, base_addr + (8 * index), SEEK_SET) == -1) {
     _die("unable to seek to index %llx of table: %llx", index, base_addr);
   }
@@ -363,7 +367,7 @@ unsigned long long retreive_page_table_addr(int fd, unsigned long long base_addr
  * @params vaddr - the virtual address to be translated
  * @returns paddr - the physical address or -1 on failure 
 */
-off64_t paddr_translation(int fd,  unsigned long long vaddr) {
+off64_t paddr_translation(int fd, const unsigned long long vaddr) {
   if (!STATIC_SHIFT || !PA_MAX){
     _die("Must call get_lime_headers before using this function");
   }
@@ -373,7 +377,6 @@ off64_t paddr_translation(int fd,  unsigned long long vaddr) {
     return vaddr - STATIC_SHIFT;
   } else {
     /* Use page tables */
-    vaddr = get_symbol_vaddr(map, INIT_PGT);
     unsigned int pa_pgt_offset = (vaddr & PAGE_MAP_MASK) >> 39;
     unsigned long long pa_pdpt = retreive_page_table_addr(fd, PGT_PADDR, pa_pgt_offset, PAGE_TABLE_ENTRY);
     unsigned int pa_pdpt_offset = (vaddr & PDPT_MASK) >> 30; 
@@ -407,7 +410,7 @@ void seek_to_base_of_task(int fd, LHdr_list *list, unsigned long long vaddr) {
       _die("could not seek to base of task");
     }
   } else {
-    _debug("couldn't find virtual address");
+    _debug("DBUG: couldn't find virtual address");
   }
 }
 
@@ -417,9 +420,9 @@ void seek_to_base_of_task(int fd, LHdr_list *list, unsigned long long vaddr) {
  * @params ts - the task_struct to be pased first
 */
 void print_process_list(int fd, LHdr_list *list, struct task_struct *init) {
-  printf("\n\ncomm: %s - pid: %d - child: %p\n", init->comm, init->pid, init->tasks);
+  printf("\n\ncomm: %s - pid: %d - child: %p\n", init->comm, init->pid, init->tasks.next);
 
-  seek_to_base_of_task(fd, list, list_entry(init->tasks.next, struct task_struct, tasks));
+  seek_to_base_of_task(fd, list, init->tasks.next);
 
   struct task_struct *next = task_struct_init();
   get_task_attr(fd, next, comm_offset, TASK_COMM_LEN, TASK_COMM_ID);
