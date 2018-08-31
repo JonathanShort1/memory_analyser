@@ -16,8 +16,8 @@
 */
 
 typedef struct symbol {
+	  char symbol[256];
     unsigned long long vaddr;
-    char symbol[256];
 } Map;
 
 /**
@@ -40,24 +40,12 @@ typedef struct lime_header_list {
 
 LHdr_list* header_list_add(LHdr_list *list, LHdr *lhdr);
 
-
-// /**
-//  * This struct is to represent the child doubly linked list 
-//  * (only parts of it)
-//  */
-
-// struct list_head {
-// 	struct task_struct* next;
-// 	struct task_struct* prev;
-// } list_head;
-
 /*
  * This struct is for part of the task_struct
 */
 struct task_struct {
 	pid_t pid;
 	char comm[TASK_COMM_LEN];
-	// struct list_head* children; 
 	struct list_head tasks;
 } task_struct;
 

@@ -22,15 +22,15 @@
 
 // #define PAGE_MAP_MASK 0b 0000 0000 0000 0000 0000 0000 0000 000 0011 1111 1110 0000 0000 0000 0000 0000
 #define PAGE_MAP_MASK 0x0000FF8000000000
-#define PDPT_MASK 0x0000007FC0000000
-#define PDE_MASK 0x000000003FE00000
-#define PTE_MASK 0x00000000008FF000
-#define PAGE_OFFSET_MASK 0x0000000000000FFF
+#define PDPT_MASK     0x0000007FC0000000
+#define PDE_MASK      0x000000003FE00000
+#define PTE_MASK      0x00000000008FF000
+#define PAGE_OFF_MASK 0x0000000000000FFF
 #define PAGE_ADDRESS 1
 #define PAGE_TABLE_ENTRY 0
 
 /* DEBUG FLAG */
-static int debug = 1;
+static int debug = 0;
 
 unsigned long long STATIC_SHIFT = 0;
 unsigned long long PA_MAX = 0;
@@ -42,13 +42,13 @@ const unsigned long long arrShifts[NUM_Shifts] = {
   0xffffffff7fe00000
 };
 
-const off64_t comm_offset = 0x608;
-const off64_t pid_offset = 0x450;
-const off64_t children_offset = 0x470;
-const off64_t tasks_offset = 0x358;
-const char* INIT_TASK = "init_task";
+const unsigned long long comm_offset = 0x608;
+const unsigned long long pid_offset = 0x450;
+const unsigned long long children_offset = 0x470;
+const unsigned long long tasks_offset = 0x358;
 
 // move this to header so can do defines on kerenl version
+const char* INIT_TASK = "init_task";
 const char* INIT_PGT = "init_level4_pgt";
 const char* INIT_TASK_COMM = "swapper/0";
 
@@ -90,6 +90,7 @@ LHdr_list* header_list_add(LHdr_list *l, LHdr *h) {
 /**
  * This function allocates memory for a task_struct
  * @params ts - a pointer to a task_struct
+ * @returns task_struct * - an allocated pointer to a task struct
 */
 struct task_struct* task_struct_init() {
   return malloc(sizeof(struct task_struct));
@@ -104,14 +105,10 @@ int open_file(const char* filename) {
   int fd;
 
   fd = open(filename, O_RDWR); 
-  
   if (fd == -1) {
-    fprintf(stderr, "Could not open file: %s", filename);
-    exit(1);
+   _die("Could not open file: %s", filename);
   }
-  
   _debug("DEBUG: Succesful open of file: %s", filename);
-
   return fd;
 }
 
@@ -120,10 +117,10 @@ int open_file(const char* filename) {
  * @params fd - an open descriptor
  * @returns n or 0
 */
-off_t get_file_length(int fd) {
+unsigned long long get_file_length(int fd) {
   lseek(fd, 0, SEEK_SET);
-  off_t size = lseek(fd, 0, SEEK_END);
-  if(size == (off_t) -1) {
+  unsigned long long size = lseek(fd, 0, SEEK_END);
+  if(size == (unsigned long long) -1) {
     _die("ERROR: Cannot seek to end of file");
   }
   lseek(fd, 0, SEEK_SET);
@@ -166,17 +163,17 @@ LHdr_list* get_lime_headers(int fd) {
 
   unsigned long long bytes_read = 0;
   int header_count = 0;
-  off64_t block_size = 0;
+  unsigned long long block_size = 0;
   off64_t seek;
   while (bytes_read < fileSize - 1) {
     LHdr *header = malloc(sizeof(LHdr));
     if (read(fd, header, sizeof(LHdr)) != sizeof(LHdr))
-      _die("unable to read in lime header: %d", header_count);
+      _die("Unable to read in lime header: %d", header_count);
     
     block_size = header->e_addr - header->s_addr + 1;
     seek = lseek64(fd, block_size, SEEK_CUR);
     if (seek == -1) {
-      _die("unable to seek to next header"); 
+      _die("Unable to seek to next header"); 
     }
 
     l = header_list_add(l, header);
@@ -184,6 +181,14 @@ LHdr_list* get_lime_headers(int fd) {
     bytes_read = seek;
   }
 
+  if (debug) {
+    LHdr_list *curr = l;
+    while (curr->next) {
+      printf("start: %llx, end: %llx\n", curr->header->s_addr, curr->header->e_addr);
+      curr = curr->next;
+    }
+  }
+  
   // set upper physical address to end of last block read
   PA_MAX = l->header->e_addr;
 
@@ -194,13 +199,14 @@ LHdr_list* get_lime_headers(int fd) {
  * This function gets the attr of the task_struct required from the dump
  * (currently assuming seek pointer is a base of task_struct)
  * Assuming task_struct does not go over lime block boundaries
+ * Restores seek offset
  * @params fd - file descriptor or dump file
  * @params curr - task struct being processed
  * @params offset - offset of attr to read
  * @params length - length of attr to read  
 */
-void get_task_attr(int fd, struct task_struct* curr, off64_t offset, int length, int attr) {
-  lseek(fd, 0, SEEK_CUR);
+void get_task_attr(int fd, struct task_struct* curr, unsigned long long  offset, int length, int attr) {
+  off64_t seek_pre_process = lseek64(fd, 0, SEEK_CUR);
   if (lseek64(fd, offset, SEEK_CUR) != -1) {
     int num_read = 0;
     switch(attr) {
@@ -214,27 +220,28 @@ void get_task_attr(int fd, struct task_struct* curr, off64_t offset, int length,
         num_read = read(fd, &curr->tasks, TASK_TASKS_LEN);
         break;
       default:
-        _die("wrong attr ID provided: %s", attr);
+        _die("get_task_attr - Wrong attr ID provided: %s", attr);
     }
     if (num_read == -1) {
-      printf("ERROR: %s, %d\n", strerror(errno), errno);
-      _die("Unable to read attr_id: %d", attr);
+      _die("get_task_attr - Unable to read attr_id: %d", attr);
     }
-    lseek64(fd, -(offset + length), SEEK_CUR);
+    if (lseek64(fd, -(offset + length), SEEK_CUR) != seek_pre_process) {
+      _die("get_task_attr - Unable to restore file seek");
+    }
   } else {
-    _die("ERROR: Cannot seek to offset: %llx (attr_id: %d)", offset, attr);
+    _die("get_task_attr - Cannot seek to offset: %llx (attr_id: %d)", offset, attr);
   }
 }
 
 /**
- * This function finds the correct lime block for the paddr
- * And seeks the dump file pointer to the start of that block
+ * This function finds the correct lime block for the paddr and seeks to that paddr
  * (seeks backwards as blocks are linked in reverse order)
+ * Does not restore seek offset
  * @params fd - file descriptor of dump
  * @params list - list of lime headers
  * @params paddr - physical address to find in dump blocks
 */
-LHdr* get_correct_header_and_seek(int fd, LHdr_list *list, unsigned long long paddr) {
+LHdr* seek_to_paddr(int fd, LHdr_list *list, unsigned long long paddr) {
   if (lseek64(fd, 0, SEEK_END) == -1) {
     _die("Unable to seek to end of dump");
   }
@@ -250,19 +257,19 @@ LHdr* get_correct_header_and_seek(int fd, LHdr_list *list, unsigned long long pa
     }
     blockSize = node->header->e_addr - node->header->s_addr + 1;
     if (lseek64(fd, -(header_length + blockSize),SEEK_CUR) == -1) {
-      _die("unable to seek to next block header");
+      _die("get_correct_header_and_seek - Unable to seek to next block header");
     }
     node = node->next;
   }
   if (!succFlag) {
-    _debug("unable to find correct block in dump for address: %llx", paddr);
+    _debug("DEBUG: unable to find correct block in dump for address: %llx", paddr);
     return NULL;
   }
 
-  //seek to header of header
+  //seek to paddr in block
   blockSize = node->header->e_addr - node->header->s_addr + 1;
-  if (lseek64(fd, -blockSize, SEEK_CUR) == -1) {
-    _die("unable to seek to start of desired block");
+  if (lseek64(fd, -blockSize + (paddr - node->header->s_addr), SEEK_CUR) == -1) {
+    _die("get_correct_header_and_seek - Unable to seek to start of desired block");
   }
   return node->header;
 }
@@ -270,6 +277,7 @@ LHdr* get_correct_header_and_seek(int fd, LHdr_list *list, unsigned long long pa
 /**
  * This function takes the address of init_task and fills a task_struct
  * structure
+ * Does not restore seek offset
  * @params fd - file descriptor of dump
  * @params first - first lime header in dump
  * @params second - second line header
@@ -285,166 +293,56 @@ void find_init_task(int fd, LHdr_list *list, struct task_struct *ts, unsigned lo
     if (vaddr >= arrShifts[i]) {
       paddr = vaddr - arrShifts[i];
 
-      LHdr* l = get_correct_header_and_seek(fd, list, paddr);
+      LHdr* l = seek_to_paddr(fd, list, paddr);
      
-      if (l && paddr <= l->e_addr) {
-        if (lseek64(fd, paddr - l->s_addr, SEEK_CUR) != -1) {
-          if (lseek64(fd, comm_offset, SEEK_CUR) != -1) {
-            if (read(fd, ts->comm, TASK_COMM_LEN -1) != -1) {
-              if (strcmp(ts->comm, INIT_TASK_COMM) == 0) {
-                _debug("SUCESS: found a viable static shift");
-                successShiftFlag = 1;
-                STATIC_SHIFT = arrShifts[i];
-                break; // found correct shift
-              }
-            } else {
-              _debug("Unable to read in the comm of task");
+      if (l) {
+        if (lseek64(fd, comm_offset, SEEK_CUR) != -1) {
+          if (read(fd, ts->comm, TASK_COMM_LEN -1) != -1) {
+            if (strcmp(ts->comm, INIT_TASK_COMM) == 0) {
+              _debug("SUCCESS: found a viable static shift");
+              successShiftFlag = 1;
+              STATIC_SHIFT = arrShifts[i];
+              break; // found correct shift
             }
           } else {
-            _debug("Unable to seek to comm_offset");
+            _debug("DEBUG: Unable to read in the comm of task");
           }
         } else {
-          _debug("Unable to seek to init_task with shift chosen");
+          _debug("DEBUG: Unable to seek to comm_offset");
         }
       } else {
-        _debug("address to big for block chosen");
+        _debug("DEBUG: address not in dump");
       }
     }
   }
+
   // fill rest of task if found 
   if (successShiftFlag) {
       if (lseek64(fd, -(comm_offset + TASK_COMM_LEN), SEEK_CUR) != -1) {
-        // find and read pid
-        get_task_attr(fd, ts, pid_offset, TASK_PID_LEN, TASK_PID_ID);
-
-        //find and read children list_head
-        //list_head_init(ts);
-        get_task_attr(fd, ts, tasks_offset, TASK_TASKS_LEN, TASK_TASKS_ID);
+        get_task_attr(fd, ts, pid_offset, TASK_PID_LEN, TASK_PID_ID); // find and read pid
+        get_task_attr(fd, ts, tasks_offset, TASK_TASKS_LEN, TASK_TASKS_ID);  // find and read children list_head
       } else {
-        _die("could not seek back to statr of task struct");
+        _die("Could not seek back to start of task struct");
       }
     } else {
       _die("Could not find a successful shift!");
     }
 }
 
-/**
- * This function will return the value in a page table/map/directory
- * (program will die on failure)
- * @params fd - file descriptor of dump file
- * @params base_addr - base address of page table
- * @params index - the index within the page table
- * @returns - the value at the page table
-*/
-unsigned long long retreive_page_table_addr(int fd, unsigned long long base_addr, unsigned int index, int pte_flag) {
-  if (lseek64(fd, 0, SEEK_SET) == -1) {
-    _die("unable to seek to beginning of file");
-  }
-  
-  if (lseek64(fd, base_addr + (8 * index), SEEK_SET) == -1) {
-    _die("unable to seek to index %llx of table: %llx", index, base_addr);
-  }
 
-  unsigned long long paddr_next = 0;
-  if (pte_flag) {
-    if (read(fd, &paddr_next,sizeof(unsigned long long)) == -1) {
-      _die("unable to read in address at %llcx", base_addr + index);
-     }
-  } else {
-     if (read(fd, &paddr_next,sizeof(unsigned int)) == -1) {
-      _die("unable to read in value at %llcx", base_addr + index);
-     }
-  }
-  return paddr_next;
-}
-
-/**
- * This function translates a virtual address to a physical address
- * (Cannot be used if static offset and PA_MAX is not set - use get_lime_headers)
- * (only works for nokaslr so far)
- * SAFE TO SEEK
- * @params fd - file descriptor
- * @params vaddr - the virtual address to be translated
- * @returns paddr - the physical address or -1 on failure 
-*/
-off64_t paddr_translation(int fd, const unsigned long long vaddr) {
-  if (!STATIC_SHIFT || !PA_MAX){
-    _die("Must call get_lime_headers before using this function");
-  }
-
-  /* Is address in directly mapped region */
-  if (STATIC_SHIFT < vaddr && vaddr <= STATIC_SHIFT + PA_MAX) {
-    return vaddr - STATIC_SHIFT;
-  } else {
-    /* Use page tables */
-    unsigned int pa_pgt_offset = (vaddr & PAGE_MAP_MASK) >> 39;
-    unsigned long long pa_pdpt = retreive_page_table_addr(fd, PGT_PADDR, pa_pgt_offset, PAGE_TABLE_ENTRY);
-    unsigned int pa_pdpt_offset = (vaddr & PDPT_MASK) >> 30; 
-    unsigned long long pa_pde = retreive_page_table_addr(fd, pa_pdpt, pa_pdpt_offset, PAGE_TABLE_ENTRY);
-    unsigned int pa_pde_offset = (vaddr & PDE_MASK) >> 21;
-    unsigned long long pa_pte = retreive_page_table_addr(fd, pa_pde, pa_pde_offset, PAGE_TABLE_ENTRY);
-    unsigned int pa_pte_offset = (vaddr & PTE_MASK) >> 12;
-    unsigned long long pa_page = retreive_page_table_addr(fd, pa_pte, pa_pte_offset, PAGE_ADDRESS);
-    unsigned int page_offset = vaddr & PAGE_OFFSET_MASK;
-    printf("pa_pgt_offset: %x\n", pa_pgt_offset);
-    printf("pa_pdpt: %llx\n", pa_pdpt);
-    printf("pa_pde: %llx\n", pa_pde);
-    printf("pa_pte: %llx\n", pa_pte);
-    printf("pa_page: %llx\n", pa_page);
-  }
-  return -1;
-}
-
-/**
- * This function seeks to the base of the given task
- * @params fd - file descriptor of dump file
- * @params vaddr - virtual address of base 
-*/
-void seek_to_base_of_task(int fd, LHdr_list *list, unsigned long long vaddr) {
-  unsigned long long paddr = paddr_translation(fd, vaddr);
-
-  if (paddr != -1ULL) {
-    LHdr *header = get_correct_header_and_seek(fd, list, paddr);
-      
-    if (lseek64(fd, paddr - header->s_addr, SEEK_CUR) == -1) {
-      _die("could not seek to base of task");
-    }
-  } else {
-    _debug("DBUG: couldn't find virtual address");
-  }
-}
-
-/**
- * This function prints out all the processes in the task_struct list starting at
- * the task_struct passed
- * @params ts - the task_struct to be pased first
-*/
-void print_process_list(int fd, LHdr_list *list, struct task_struct *init) {
-  printf("\n\ncomm: %s - pid: %d - child: %p\n", init->comm, init->pid, init->tasks.next);
-
-  seek_to_base_of_task(fd, list, init->tasks.next);
-
-  struct task_struct *next = task_struct_init();
-  get_task_attr(fd, next, comm_offset, TASK_COMM_LEN, TASK_COMM_ID);
-
-  /*struct list_head *pos;
-  struct task_struct *curr;
-  list_for_each(pos, &init->tasks) {
-    curr = list_entry(pos, struct task_struct, tasks);
-    printf("comm: %s", curr->comm);
-  }*/
-  printf("task: %s\n", next->comm);
-}
 
 /**
  * This function parses the system map file and returns a pointer 
  * to an array of symbols
+ * Closes the file descriptor on exit!
+ * @params fd - file descriptor of system map
+ * @return an array of symbol structs - struct symbol { char* : symbol, ull : vaddr}
 */
 Map** parse_system_map(int fd) {
-  off_t fileSize = get_file_length(fd);
+  unsigned long long fileSize = get_file_length(fd);
   char* buff = malloc(sizeof(char) * (fileSize + 2));
   if ((read(fd, buff,fileSize) == -1)) {
-    fprintf(stderr, "Unable to system map\n");
+    _die("parse_system_map - Unable to read in system map");
   }
   buff[fileSize] = '\0';
 
@@ -475,7 +373,7 @@ Map** parse_system_map(int fd) {
           strncpy(map[index]->symbol, tok_space, SYMBOL_SIZE);
           break;
         default:
-          fprintf(stderr, "Error parsing a symbol struct\n");
+          _debug("DEBUG: Error parsing a symbol struct\n");
       }
       i += 1;
       tok_space = strtok_r(NULL, " ", &tok_space_end);
@@ -485,6 +383,7 @@ Map** parse_system_map(int fd) {
     tok_line = strtok_r(NULL, "\n", &tok_line_end);
   }
 
+  close(fd);
   return map;
 }
 
@@ -505,15 +404,17 @@ void process_dump(const char*sys_filename, const char* dump_filename) {
   /* find and fill the init_task task_struct */
   struct task_struct init_task;
   task_struct_init(&init_task);
-  unsigned long long init_task_vaddr = (get_symbol_vaddr(map, INIT_TASK));
+  unsigned long long init_task_vaddr = get_symbol_vaddr(map, INIT_TASK);
   find_init_task(dump_fd, headerList, &init_task, init_task_vaddr);
+
+  printf("task_struct:\n%s %d %p\n", init_task.comm, init_task.pid, init_task.tasks);
   
   /* set the physical address of the page tables */
   unsigned long long pgt_vaddr = get_symbol_vaddr(map, INIT_PGT);
   PGT_PADDR = pgt_vaddr - STATIC_SHIFT;
 
   /* printf the process list */
-  print_process_list(dump_fd, headerList, &init_task);
+  //print_process_list(dump_fd, headerList, &init_task);
 }
 
 /**
@@ -524,13 +425,11 @@ void process_dump(const char*sys_filename, const char* dump_filename) {
 */
 int main(int argc, char** argv) {
   if (getuid() != 0) {
-    fprintf(stderr, "Run as root!\n");
-    exit(1);
+    _die("Run as root!\n");
   }
 
   char* sys_filename = NULL;
   char* dump_filename = NULL;
-  
   int sflag = 0;
   int dflag = 0;
   int opt = 0;
@@ -554,11 +453,12 @@ int main(int argc, char** argv) {
     }
   }
 
+  char* usage = "Usage: sudo ./main -s /path/to/System.map -d /path/to/dump\n\n";
   if (!sflag || !dflag) {
-    _die("did not pass system file name or dump filename");
+    _die("Did not pass system file name and/or dump filename\n%s", usage);
   }
 
   process_dump(sys_filename, dump_filename);
-  
+
   return 0;
 }
