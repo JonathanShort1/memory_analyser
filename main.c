@@ -20,14 +20,12 @@
 #define SYSTEM_MAP_SIZE 100000
 #define NUM_Shifts 4
 
-// #define PAGE_MAP_MASK 0b 0000 0000 0000 0000 0000 0000 0000 000 0011 1111 1110 0000 0000 0000 0000 0000
+// #define PAGE_MAP_MASK 0b 0000 0000 0000 0000 0000 0000 0000 000 0000 0000 0001 1111 1111 0000 0000 0000
 #define PAGE_MAP_MASK 0x0000FF8000000000
 #define PDPT_MASK     0x0000007FC0000000
 #define PDE_MASK      0x000000003FE00000
-#define PTE_MASK      0x00000000008FF000
+#define PTE_MASK      0x00000000001FF000
 #define PAGE_OFF_MASK 0x0000000000000FFF
-#define PAGE_ADDRESS 1
-#define PAGE_TABLE_ENTRY 0
 
 /* DEBUG FLAG */
 static int debug = 0;
@@ -240,8 +238,9 @@ void get_task_attr(int fd, struct task_struct* curr, unsigned long long  offset,
  * @params fd - file descriptor of dump
  * @params list - list of lime headers
  * @params paddr - physical address to find in dump blocks
+ * @returns -1 on failure or 0 for success
 */
-LHdr* seek_to_paddr(int fd, LHdr_list *list, unsigned long long paddr) {
+int seek_to_paddr(int fd, LHdr_list *list, unsigned long long paddr) {
   if (lseek64(fd, 0, SEEK_END) == -1) {
     _die("Unable to seek to end of dump");
   }
@@ -251,7 +250,7 @@ LHdr* seek_to_paddr(int fd, LHdr_list *list, unsigned long long paddr) {
   unsigned long long blockSize = 0;
   LHdr_list *node  = list;
   while (node->next) {
-    if (paddr < node->header->e_addr) {
+    if (node->header->s_addr <= paddr && paddr < node->header->e_addr) {
       succFlag = 1;
       break;
     }
@@ -263,7 +262,7 @@ LHdr* seek_to_paddr(int fd, LHdr_list *list, unsigned long long paddr) {
   }
   if (!succFlag) {
     _debug("DEBUG: unable to find correct block in dump for address: %llx", paddr);
-    return NULL;
+    return -1;
   }
 
   //seek to paddr in block
@@ -271,7 +270,7 @@ LHdr* seek_to_paddr(int fd, LHdr_list *list, unsigned long long paddr) {
   if (lseek64(fd, -blockSize + (paddr - node->header->s_addr), SEEK_CUR) == -1) {
     _die("get_correct_header_and_seek - Unable to seek to start of desired block");
   }
-  return node->header;
+  return 0;
 }
 
 /**
@@ -293,9 +292,9 @@ void find_init_task(int fd, LHdr_list *list, struct task_struct *ts, unsigned lo
     if (vaddr >= arrShifts[i]) {
       paddr = vaddr - arrShifts[i];
 
-      LHdr* l = seek_to_paddr(fd, list, paddr);
+      int seek = seek_to_paddr(fd, list, paddr);
      
-      if (l) {
+      if (seek != -1) {
         if (lseek64(fd, comm_offset, SEEK_CUR) != -1) {
           if (read(fd, ts->comm, TASK_COMM_LEN -1) != -1) {
             if (strcmp(ts->comm, INIT_TASK_COMM) == 0) {
@@ -333,11 +332,123 @@ void find_init_task(int fd, LHdr_list *list, struct task_struct *ts, unsigned lo
  * ****************************************************
  * PRINTING PROCESSES
  * ****************************************************  
-*/ 
+*/
 
+/**
+ * This function converts a ULL to little endian (and vice versa)
+ * Then trims any trailing zeros e.g. 0x687000 -> 0x687
+ * @params x - the ull to change
+ * @returns the new representation of the ULL 
+ */ 
+unsigned long long to_little_endian(unsigned long long x) {
+  unsigned long long y = (
+    ((x >> 56) & 0x00000000000000ff) |
+    ((x >> 40) & 0x000000000000ff00) |
+    ((x >> 24) & 0x0000000000ff0000) |
+    ((x >> 8) &  0x00000000ff000000) | 
+    ((x << 8) &  0x000000ff00000000) | 
+    ((x << 24) & 0x0000ff0000000000) |
+    ((x << 40) & 0x00ff000000000000) |
+    ((x << 56) & 0xff00000000000000)
+    );
+
+    // int bit;
+    // while ((bit = (y >> 1) & 1U) != 1) {
+    //   y = y >> 1;
+    // }
+    return y;
+}
+
+/**
+ * This function translates a virtual address to a physical address
+ * (Cannot be used if static offset - use get_lime_headers)
+ * (only works for nokaslr so far)
+ * SAFE TO SEEK
+ * @params fd - file descriptor
+ * @params list - list of lime headers
+ * @params vaddr - the virtual address to be translated
+ * @returns paddr - the physical address or -1 on failure 
+*/
+unsigned long long paddr_translation(int fd, LHdr_list *list, unsigned long long vaddr) {
+  if (!STATIC_SHIFT) {
+    _die("STATIC SHIFT not set");
+  }
+  
+  if (vaddr > STATIC_SHIFT) {
+    return vaddr - STATIC_SHIFT;
+  }
+
+  unsigned int pgt_offset = (vaddr & PAGE_MAP_MASK) >> 39;
+  printf("pgt_offset: %d\n", pgt_offset);
+  unsigned long long pa_pdpte;
+  seek_to_paddr(fd, list, PGT_PADDR + (8 * pgt_offset));
+  if (read(fd, &pa_pdpte, sizeof(unsigned long long)) == -1) {
+    _die("Failure to read in pa_pdpt: %llx", PGT_PADDR + (8 * pgt_offset));
+  }
+  printf("pa_pdpt: %llx\n", pa_pdpte);
+  printf("pa_pdpt: %llx\n", to_little_endian(pa_pdpte));
+
+
+  unsigned int pdpt_offset = (vaddr & PDPT_MASK) >> 30;
+  printf("pdpt_offset: %x\n", pdpt_offset);
+  unsigned long long pa_pde;
+  seek_to_paddr(fd, list, to_little_endian(pa_pdpte) + (8 * pdpt_offset));
+  if (read(fd, &pa_pde, sizeof(unsigned long long)) == -1) {
+    _die("Failure to read in pa_pdpt: %llx", pa_pdpte + (8 * pdpt_offset));
+  }
+  printf("pa_pde: %llx\n", pa_pde);
+  printf("pa_pde: %llx\n", to_little_endian(pa_pde));
+
+
+  unsigned int pde_offset = (vaddr & PDE_MASK) >> 21;
+  printf("pde_offset: %x\n", pde_offset);
+  unsigned long long pa_pte;
+  seek_to_paddr(fd, list, to_little_endian(pa_pde) + (8 * pde_offset));
+  if (read(fd, &pa_pte, sizeof(unsigned long long)) == -1) {
+    _die("Failure to read in pa_pdpt: %llx", pa_pde + (8 * pde_offset));
+  }
+  printf("pa_pte: %llx\n", pa_pte);
+  printf("pa_pte: %llx\n", to_little_endian(pa_pte));
+
+
+  unsigned int pte_offset = (vaddr & PTE_MASK) >> 12;
+  printf("pte_offset: %x\n", pte_offset);
+  unsigned long long pa_page;
+  seek_to_paddr(fd, list, to_little_endian(pa_pte) + (8 * pte_offset));
+  if (read(fd, &pa_page, sizeof(unsigned long long)) == -1) {
+    _die("Failure to read in pa_pdpt: %llx", pa_pte + (8 * pte_offset));
+  }
+  printf("pa_page: %llx\n", pa_page);
+  printf("pa_page: %llx\n", to_little_endian(pa_page));
+
+  unsigned int page_offset = vaddr & PAGE_OFF_MASK;
+  printf("page_offset: %x\n", page_offset);
+
+
+
+  return pa_page + (8 * page_offset);
+}
+
+/**
+ * This function prints out all the processes in the task_struct list starting at
+ * the task_struct passed
+ * @params ts - the task_struct to be pased first
+*/
 void print_process_list(int fd, LHdr_list *list, struct task_struct *init_task) {
   //loop
   // translate task.next into physical address
+  unsigned long long paddr = paddr_translation(fd, list, init_task->tasks.next);
+  printf("paddr: %llx\n", paddr);
+
+  unsigned long long next_addr = paddr - tasks_offset;
+  seek_to_paddr(fd, list, next_addr);
+
+  struct task_struct next;
+  task_struct_init(&next);
+  get_task_attr(fd, &next, comm_offset, TASK_COMM_LEN, TASK_COMM_ID);
+  get_task_attr(fd, &next, pid_offset, TASK_PID_LEN, TASK_PID_ID);
+
+  printf("next: %s %d\n", next.comm, next.pid);
   // task.next -> tnext.next
   // goto address of tasks.next
   // subtract offset of tasks in task_struct (now at base)
@@ -426,10 +537,9 @@ void process_dump(const char*sys_filename, const char* dump_filename) {
   unsigned long long init_task_vaddr = get_symbol_vaddr(map, INIT_TASK);
   find_init_task(dump_fd, headerList, &init_task, init_task_vaddr);
 
-  printf("task_struct:\nname:%s\npid: %d\n     tasks: %p\ntasks.next: %p\ntasks.prev: %p\n",
+  printf("task_struct: name: %s pid: %d\n tasks.next: %p\n tasks.prev: %p\n",
     init_task.comm, 
     init_task.pid,
-    init_task.tasks,
     init_task.tasks.next,
     init_task.tasks.prev
     );
@@ -439,7 +549,7 @@ void process_dump(const char*sys_filename, const char* dump_filename) {
   PGT_PADDR = pgt_vaddr - STATIC_SHIFT;
 
   /* printf the process list */
-  //print_process_list(dump_fd, headerList, &init_task);
+  print_process_list(dump_fd, headerList, &init_task);
 }
 
 /**
