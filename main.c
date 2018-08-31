@@ -45,7 +45,7 @@ const unsigned long long arrShifts[NUM_Shifts] = {
 const unsigned long long comm_offset = 0x608;
 const unsigned long long pid_offset = 0x450;
 const unsigned long long children_offset = 0x470;
-const unsigned long long tasks_offset = 0x358;
+const unsigned long long tasks_offset = 0x359;
 
 // move this to header so can do defines on kerenl version
 const char* INIT_TASK = "init_task";
@@ -329,7 +329,26 @@ void find_init_task(int fd, LHdr_list *list, struct task_struct *ts, unsigned lo
     }
 }
 
+/**
+ * ****************************************************
+ * PRINTING PROCESSES
+ * ****************************************************  
+*/ 
 
+void print_process_list(int fd, LHdr_list *list, struct task_struct *init_task) {
+  //loop
+  // translate task.next into physical address
+  // task.next -> tnext.next
+  // goto address of tasks.next
+  // subtract offset of tasks in task_struct (now at base)
+  // read in comm and pid
+}
+
+/**
+ * ****************************************************
+ * FILE PARSING
+ * ****************************************************
+*/
 
 /**
  * This function parses the system map file and returns a pointer 
@@ -407,7 +426,13 @@ void process_dump(const char*sys_filename, const char* dump_filename) {
   unsigned long long init_task_vaddr = get_symbol_vaddr(map, INIT_TASK);
   find_init_task(dump_fd, headerList, &init_task, init_task_vaddr);
 
-  printf("task_struct:\n%s %d %p\n", init_task.comm, init_task.pid, init_task.tasks);
+  printf("task_struct:\nname:%s\npid: %d\n     tasks: %p\ntasks.next: %p\ntasks.prev: %p\n",
+    init_task.comm, 
+    init_task.pid,
+    init_task.tasks,
+    init_task.tasks.next,
+    init_task.tasks.prev
+    );
   
   /* set the physical address of the page tables */
   unsigned long long pgt_vaddr = get_symbol_vaddr(map, INIT_PGT);
