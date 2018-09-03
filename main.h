@@ -9,7 +9,7 @@
 #define TASK_PID_ID 1
 #define TASK_TASKS_ID 2
 
-#include "list.h"
+//#include "list.h"
 
 /**
  * This struct is used to parse the System.map-X file
@@ -43,10 +43,16 @@ LHdr_list* header_list_add(LHdr_list *list, LHdr *lhdr);
 /*
  * This struct is for part of the task_struct
 */
+
+struct list_head {
+	struct list_head *next, *prev;
+}; 
+
 struct task_struct {
 	pid_t pid;
 	char comm[TASK_COMM_LEN];
 	struct list_head tasks;
+	// unsigned long long tasks[2];
 } task_struct;
 
 #endif

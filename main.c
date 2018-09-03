@@ -16,11 +16,12 @@
 
 #include "main.h"
 
+#define offsetof(Type, Member) ((size_t) &((Type *) NULL)->Member
+
 #define SYMBOL_SIZE 64
 #define SYSTEM_MAP_SIZE 100000
 #define NUM_Shifts 4
 
-// #define PAGE_MAP_MASK 0b 0000 0000 0000 0000 0000 0000 0000 000 0000 0000 0001 1111 1111 0000 0000 0000
 #define PAGE_MAP_MASK 0x0000FF8000000000
 #define PDPT_MASK     0x0000007FC0000000
 #define PDE_MASK      0x000000003FE00000
@@ -28,7 +29,7 @@
 #define PAGE_OFF_MASK 0x0000000000000FFF
 
 /* DEBUG FLAG */
-static int debug = 0;
+static int debug = 1;
 
 unsigned long long STATIC_SHIFT = 0;
 unsigned long long PA_MAX = 0;
@@ -352,11 +353,11 @@ unsigned long long to_little_endian(unsigned long long x) {
     ((x << 56) & 0xff00000000000000)
     );
 
-    // int bit;
-    // while ((bit = (y >> 1) & 1U) != 1) {
-    //   y = y >> 1;
-    // }
-    return y;
+  int byte;
+  while (y != 0 && (byte = (y & 0xFF)) == 0) {
+    y = y >> 8;
+  }
+  return y;
 }
 
 /**
@@ -378,8 +379,9 @@ unsigned long long paddr_translation(int fd, LHdr_list *list, unsigned long long
     return vaddr - STATIC_SHIFT;
   }
 
+  // return vaddr - 0xffff880000000000;
+
   unsigned int pgt_offset = (vaddr & PAGE_MAP_MASK) >> 39;
-  printf("pgt_offset: %d\n", pgt_offset);
   unsigned long long pa_pdpte;
   seek_to_paddr(fd, list, PGT_PADDR + (8 * pgt_offset));
   if (read(fd, &pa_pdpte, sizeof(unsigned long long)) == -1) {
@@ -390,7 +392,6 @@ unsigned long long paddr_translation(int fd, LHdr_list *list, unsigned long long
 
 
   unsigned int pdpt_offset = (vaddr & PDPT_MASK) >> 30;
-  printf("pdpt_offset: %x\n", pdpt_offset);
   unsigned long long pa_pde;
   seek_to_paddr(fd, list, to_little_endian(pa_pdpte) + (8 * pdpt_offset));
   if (read(fd, &pa_pde, sizeof(unsigned long long)) == -1) {
@@ -401,7 +402,6 @@ unsigned long long paddr_translation(int fd, LHdr_list *list, unsigned long long
 
 
   unsigned int pde_offset = (vaddr & PDE_MASK) >> 21;
-  printf("pde_offset: %x\n", pde_offset);
   unsigned long long pa_pte;
   seek_to_paddr(fd, list, to_little_endian(pa_pde) + (8 * pde_offset));
   if (read(fd, &pa_pte, sizeof(unsigned long long)) == -1) {
@@ -412,7 +412,6 @@ unsigned long long paddr_translation(int fd, LHdr_list *list, unsigned long long
 
 
   unsigned int pte_offset = (vaddr & PTE_MASK) >> 12;
-  printf("pte_offset: %x\n", pte_offset);
   unsigned long long pa_page;
   seek_to_paddr(fd, list, to_little_endian(pa_pte) + (8 * pte_offset));
   if (read(fd, &pa_page, sizeof(unsigned long long)) == -1) {
@@ -422,11 +421,8 @@ unsigned long long paddr_translation(int fd, LHdr_list *list, unsigned long long
   printf("pa_page: %llx\n", to_little_endian(pa_page));
 
   unsigned int page_offset = vaddr & PAGE_OFF_MASK;
-  printf("page_offset: %x\n", page_offset);
 
-
-
-  return pa_page + (8 * page_offset);
+  return to_little_endian(pa_page) + (8 * page_offset);
 }
 
 /**
@@ -435,12 +431,11 @@ unsigned long long paddr_translation(int fd, LHdr_list *list, unsigned long long
  * @params ts - the task_struct to be pased first
 */
 void print_process_list(int fd, LHdr_list *list, struct task_struct *init_task) {
-  //loop
   // translate task.next into physical address
-  unsigned long long paddr = paddr_translation(fd, list, init_task->tasks.next);
+  unsigned long long paddr = paddr_translation(fd, list, (unsigned long long) 0xffffffff81e13500);
   printf("paddr: %llx\n", paddr);
 
-  unsigned long long next_addr = paddr - tasks_offset;
+  unsigned long long next_addr = paddr; // - tasks_offset;
   seek_to_paddr(fd, list, next_addr);
 
   struct task_struct next;
@@ -536,6 +531,7 @@ void process_dump(const char*sys_filename, const char* dump_filename) {
   task_struct_init(&init_task);
   unsigned long long init_task_vaddr = get_symbol_vaddr(map, INIT_TASK);
   find_init_task(dump_fd, headerList, &init_task, init_task_vaddr);
+  printf("init_addr: %llx\n", init_task_vaddr);
 
   printf("task_struct: name: %s pid: %d\n tasks.next: %p\n tasks.prev: %p\n",
     init_task.comm, 
