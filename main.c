@@ -2,6 +2,7 @@
 
 #include <stdlib.h>
 #include <stdio.h>
+#include <stddef.h>
 #include <string.h>
 #include <unistd.h>
 #include <ctype.h>
@@ -9,14 +10,14 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <stdarg.h>
+#include <linux/kernel.h>
+#include <linux/version.h>
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <linux/sched.h>
 
 #include "main.h"
-
-#define offsetof(Type, Member) ((size_t) &((Type *) NULL)->Member
 
 #define SYMBOL_SIZE 64
 #define SYSTEM_MAP_SIZE 100000
@@ -27,6 +28,17 @@
 #define PDE_MASK      0x000000003FE00000
 #define PTE_MASK      0x00000000001FF000
 #define PAGE_OFF_MASK 0x0000000000000FFF
+
+
+// move this to header so can do defines on kerenl version
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(4, 13, 0)
+const char* INIT_PGT = "init_level4_pgt";
+#else
+const char* INIT_PGT = "init_pgt";
+#endif
+
+#define INIT_TASK "init_task"
+#define INIT_TASK_COMM "swapper/0"
 
 /* DEBUG FLAG */
 static int debug = 1;
@@ -46,10 +58,7 @@ const unsigned long long pid_offset = 0x450;
 const unsigned long long children_offset = 0x470;
 const unsigned long long tasks_offset = 0x359;
 
-// move this to header so can do defines on kerenl version
-const char* INIT_TASK = "init_task";
-const char* INIT_PGT = "init_level4_pgt";
-const char* INIT_TASK_COMM = "swapper/0";
+
 
 void _debug(const char *format,...) {
   if (debug) {
@@ -379,7 +388,7 @@ unsigned long long paddr_translation(int fd, LHdr_list *list, unsigned long long
     return vaddr - STATIC_SHIFT;
   }
 
-  // return vaddr - 0xffff880000000000;
+  return vaddr - 0xffff880000000000;
 
   unsigned int pgt_offset = (vaddr & PAGE_MAP_MASK) >> 39;
   unsigned long long pa_pdpte;
@@ -432,10 +441,10 @@ unsigned long long paddr_translation(int fd, LHdr_list *list, unsigned long long
 */
 void print_process_list(int fd, LHdr_list *list, struct task_struct *init_task) {
   // translate task.next into physical address
-  unsigned long long paddr = paddr_translation(fd, list, (unsigned long long) 0xffffffff81e13500);
+  unsigned long long paddr = paddr_translation(fd, list, to_little_endian((unsigned long long) init_task->tasks.prev));
   printf("paddr: %llx\n", paddr);
 
-  unsigned long long next_addr = paddr; // - tasks_offset;
+  unsigned long long next_addr = paddr - tasks_offset;
   seek_to_paddr(fd, list, next_addr);
 
   struct task_struct next;

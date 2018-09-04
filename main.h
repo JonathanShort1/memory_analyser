@@ -9,8 +9,6 @@
 #define TASK_PID_ID 1
 #define TASK_TASKS_ID 2
 
-//#include "list.h"
-
 /**
  * This struct is used to parse the System.map-X file
 */

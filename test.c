@@ -1,5 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
+#include <linux/sched.h>
 
 #define PAGE_MAP_MASK 0x0000FF8000000000
 #define PDPT_MASK     0x0000007FC0000000
@@ -43,4 +45,5 @@ void test_bit_shift() {
 
 int main(void) {
   test_bit_shift();
+  // offsetof(struct task_struct, tasks.next);
 }
