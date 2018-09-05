@@ -55,8 +55,7 @@ const unsigned long long arrShifts[NUM_Shifts] = {
 
 const unsigned long long comm_offset = 0x608;
 const unsigned long long pid_offset = 0x450;
-const unsigned long long children_offset = 0x470;
-const unsigned long long tasks_offset = 0x359;
+const unsigned long long tasks_offset = 0x358;
 
 
 
@@ -303,12 +302,11 @@ void find_init_task(int fd, LHdr_list *list, struct task_struct *ts, unsigned lo
       paddr = vaddr - arrShifts[i];
 
       int seek = seek_to_paddr(fd, list, paddr);
-     
       if (seek != -1) {
         if (lseek64(fd, comm_offset, SEEK_CUR) != -1) {
           if (read(fd, ts->comm, TASK_COMM_LEN -1) != -1) {
             if (strcmp(ts->comm, INIT_TASK_COMM) == 0) {
-              _debug("SUCCESS: found a viable static shift");
+              _debug("SUCCESS: found a viable static shift: %llx", arrShifts[i]);
               successShiftFlag = 1;
               STATIC_SHIFT = arrShifts[i];
               break; // found correct shift
@@ -327,7 +325,7 @@ void find_init_task(int fd, LHdr_list *list, struct task_struct *ts, unsigned lo
 
   // fill rest of task if found 
   if (successShiftFlag) {
-      if (lseek64(fd, -(comm_offset + TASK_COMM_LEN), SEEK_CUR) != -1) {
+      if (lseek64(fd, -(comm_offset + TASK_COMM_LEN), SEEK_CUR) != -1) { // seek back to base of task_struct
         get_task_attr(fd, ts, pid_offset, TASK_PID_LEN, TASK_PID_ID); // find and read pid
         get_task_attr(fd, ts, tasks_offset, TASK_TASKS_LEN, TASK_TASKS_ID);  // find and read children list_head
       } else {
@@ -388,7 +386,9 @@ unsigned long long paddr_translation(int fd, LHdr_list *list, unsigned long long
     return vaddr - STATIC_SHIFT;
   }
 
-  return vaddr - 0xffff880000000000;
+  printf("addr: %llx\n", vaddr);            
+
+  //return to_little_endian(vaddr - 0xffff880000000000);
 
   unsigned int pgt_offset = (vaddr & PAGE_MAP_MASK) >> 39;
   unsigned long long pa_pdpte;
@@ -441,7 +441,7 @@ unsigned long long paddr_translation(int fd, LHdr_list *list, unsigned long long
 */
 void print_process_list(int fd, LHdr_list *list, struct task_struct *init_task) {
   // translate task.next into physical address
-  unsigned long long paddr = paddr_translation(fd, list, to_little_endian((unsigned long long) init_task->tasks.prev));
+  unsigned long long paddr = paddr_translation(fd, list, (unsigned long long) init_task->tasks.next);
   printf("paddr: %llx\n", paddr);
 
   unsigned long long next_addr = paddr - tasks_offset;
@@ -526,7 +526,7 @@ Map** parse_system_map(int fd) {
  * @params sys_filename - the filename of the System.map-$(uname -r)
  * @params dump_filename - the name of the memory dump
 */
-void process_dump(const char*sys_filename, const char* dump_filename) {
+void process_dump(const char* sys_filename, const char* dump_filename) {
   /* open map file and load into array */
   int sysmap_fd = open_file(sys_filename);
   Map** map = parse_system_map(sysmap_fd);
@@ -555,6 +555,22 @@ void process_dump(const char*sys_filename, const char* dump_filename) {
 
   /* printf the process list */
   print_process_list(dump_fd, headerList, &init_task);
+}
+
+void search(const char* dump_filename, const char* string) {
+  int fd = open_file(dump_filename);
+  unsigned long long size = get_file_length(fd);
+  int len = strlen(string);
+  printf("len: %s %d\n", string, len);
+  char buf[len + 1];
+  for (unsigned int i = 0; i < size - len; i++) {
+    lseek64(fd, i, SEEK_CUR);
+    read(fd, &buf,len);
+    buf[len] = '\0';
+    if (strcmp(string, buf) == 0) {
+      printf("i: %x", i);
+    }
+  }
 }
 
 /**
@@ -598,7 +614,8 @@ int main(int argc, char** argv) {
     _die("Did not pass system file name and/or dump filename\n%s", usage);
   }
 
-  process_dump(sys_filename, dump_filename);
+  // process_dump(sys_filename, dump_filename);
+  search(dump_filename, "init");
 
   return 0;
 }

@@ -45,5 +45,4 @@ void test_bit_shift() {
 
 int main(void) {
   test_bit_shift();
-  // offsetof(struct task_struct, tasks.next);
 }
