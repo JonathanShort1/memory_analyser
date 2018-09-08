@@ -33,6 +33,8 @@ typedef struct lime_header {
 
 typedef struct lime_header_list {
 	LHdr *header;
+	unsigned long long block_s_offset;
+	unsigned long long block_e_offset;
 	struct lime_header_list* next;
 } LHdr_list;
 
@@ -50,7 +52,6 @@ struct task_struct {
 	pid_t pid;
 	char comm[TASK_COMM_LEN];
 	struct list_head tasks;
-	// unsigned long long tasks[2];
 } task_struct;
 
 #endif
