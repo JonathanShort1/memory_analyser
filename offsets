@@ -1,6 +1,0 @@
-size: 0x1ac0
-pid offset: 0x450
-comm offset: 0x608
-parent offset: 0x468
-childlist off: 0x470
-task off: 0x358

@@ -4,10 +4,14 @@
 #define TASK_COMM_LEN 16
 #define TASK_PID_LEN sizeof(int)
 #define TASK_TASKS_LEN sizeof(struct list_head)
+#define TASK_PARENT_PTR_LEN sizeof(struct task_struct *)
 
 #define TASK_COMM_ID 0
 #define TASK_PID_ID 1
 #define TASK_TASKS_ID 2
+#define TASK_PARENT_PTR_ID 3
+#define TASK_PPID_ID 4
+
 
 /**
  * This struct is used to parse the System.map-X file
@@ -50,8 +54,10 @@ struct list_head {
 
 struct task_struct {
 	pid_t pid;
+	pid_t ppid;
 	char comm[TASK_COMM_LEN];
 	struct list_head tasks;
+	struct task_struct* parent_ptr;
 } task_struct;
 
 #endif

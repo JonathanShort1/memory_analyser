@@ -41,7 +41,7 @@ const char* INIT_PGT = "init_pgt";
 #define INIT_TASK_COMM "swapper/0"
 
 /* DEBUG FLAG */
-static int debug = 1;
+static int debug = 0;
 
 unsigned long long KERNEL_MAP_SHIFT = 0;
 unsigned long long STATIC_SHIFT = 0xffff880000000000;
@@ -55,7 +55,8 @@ const unsigned long long arrShifts[NUM_Shifts] = {
 
 const unsigned long long comm_offset = 0x608;
 const unsigned long long pid_offset = 0x450;
-const unsigned long long tasks_offset = 0x359;
+const unsigned long long tasks_offset = 0x358 + 1;
+const unsigned long long parent_offset = 0x468 + 1;
 
 void _debug(const char *format,...) {
   if (debug) {
@@ -223,13 +224,19 @@ void get_task_attr(int fd, struct task_struct* curr, unsigned long long  offset,
     int num_read = 0;
     switch(attr) {
       case TASK_COMM_ID:
-        num_read = read(fd, curr->comm, TASK_COMM_LEN);
+        num_read = read(fd, curr->comm, length);
         break;
       case TASK_PID_ID:
-        num_read = read(fd, &curr->pid, TASK_PID_LEN);
+        num_read = read(fd, &curr->pid, length);
+        break;
+      case TASK_PARENT_PTR_ID:
+        num_read = read(fd, &curr->parent_ptr, length);
         break;
       case TASK_TASKS_ID:
-        num_read = read(fd, &curr->tasks, TASK_TASKS_LEN);
+        num_read = read(fd, &curr->tasks, length);
+        break;
+      case TASK_PPID_ID:
+        num_read = read(fd, &curr->ppid, length);
         break;
       default:
         _die("get_task_attr - Wrong attr ID provided: %d", attr);
@@ -245,6 +252,8 @@ void get_task_attr(int fd, struct task_struct* curr, unsigned long long  offset,
   }
 }
 
+
+
 /**
  * This function finds the correct lime block for the paddr and seeks to that paddr
  * (seeks backwards as blocks are linked in reverse order)
@@ -254,7 +263,7 @@ void get_task_attr(int fd, struct task_struct* curr, unsigned long long  offset,
  * @params paddr - physical address to find in dump blocks
  * @returns -1 on failure or 0 for success
 */
-int seek_to_paddr(int fd, LHdr_list *list, unsigned long long paddr) {
+int paddr_to_offset(int fd, LHdr_list *list, unsigned long long paddr) {
   if (lseek64(fd, 0, SEEK_END) == -1) {
     _die("Unable to seek to end of dump");
   }
@@ -296,9 +305,7 @@ int seek_to_paddr(int fd, LHdr_list *list, unsigned long long paddr) {
  * @params seek - position of seek offset in dump file
  * @returns paddr - the physical address
 */
-unsigned long long paddr_from_seek(LHdr_list *list, unsigned long long seek) {
-  unsigned long long paddr = 0;
-
+unsigned long long offset_to_paddr(LHdr_list *list, unsigned long long seek) {
   int foundBlockFlag = 0;
   LHdr_list *node = list;
   while (node->next) {
@@ -312,10 +319,26 @@ unsigned long long paddr_from_seek(LHdr_list *list, unsigned long long seek) {
     _die("Unable to find block that contains offset: %llx", seek);
   }
 
-  paddr = seek + node->header->e_addr + 1 - node->block_e_offset;
-  printf("paddr: %llx from seek: %llx, diff: %llx\n", paddr, seek, paddr - seek);
+  return = seek + node->header->e_addr + 1 - node->block_e_offset;
+}
 
-  return paddr;
+/**
+ * This function returns the pid of a process' parent
+ * @params fd - file descriptor of dump
+ * @params list - list of lime headers in dump file
+ * @parms curr - the current task to find the parent pid of 
+*/ 
+void get_parent_pid(int fd, LHdr_list *list, struct task_struct* curr) {
+  unsigned long long parent_paddr;
+  unsigned long long parent_vaddr = (unsigned long long) curr->parent_ptr;
+  if (parent_vaddr > KERNEL_MAP_SHIFT) {
+    parent_paddr = parent_vaddr - KERNEL_MAP_SHIFT;
+  } else {
+    parent_paddr = parent_vaddr - STATIC_SHIFT;
+  }
+  paddr_to_offset(fd, list, parent_paddr);
+
+  get_task_attr(fd, curr, pid_offset, TASK_PID_LEN, TASK_PPID_ID);
 }
 
 /**
@@ -337,7 +360,7 @@ void find_init_task(int fd, LHdr_list *list, struct task_struct *ts, unsigned lo
     if (vaddr >= arrShifts[i]) {
       paddr = vaddr - arrShifts[i];
 
-      int seek = seek_to_paddr(fd, list, paddr);
+      int seek = paddr_to_offset(fd, list, paddr);
       if (seek != -1) {
         if (lseek64(fd, comm_offset, SEEK_CUR) != -1) {
           if (read(fd, ts->comm, TASK_COMM_LEN -1) != -1) {
@@ -362,9 +385,10 @@ void find_init_task(int fd, LHdr_list *list, struct task_struct *ts, unsigned lo
   // fill rest of task if found 
   if (successShiftFlag) {
       if (lseek64(fd, -(comm_offset + TASK_COMM_LEN), SEEK_CUR) != -1) { // seek back to base of task_struct
-        printf("\n\n %lx\n\n", lseek64(fd, 0, SEEK_CUR));
         get_task_attr(fd, ts, pid_offset, TASK_PID_LEN, TASK_PID_ID); // find and read pid
         get_task_attr(fd, ts, tasks_offset, TASK_TASKS_LEN, TASK_TASKS_ID);  // find and read tasks list_head
+        get_task_attr(fd, ts, parent_offset, TASK_PARENT_PTR_LEN, TASK_PARENT_PTR_ID);
+        get_parent_pid(fd, list, ts);
       } else {
         _die("Could not seek back to start of task struct");
       }
@@ -437,7 +461,7 @@ unsigned long long paddr_translation(int fd, LHdr_list *list, unsigned long long
   unsigned int page_offset = vaddr & PAGE_OFF_MASK;
 
   /* read address of page directory pointer table */
-  seek_to_paddr(fd, list, PGT_PADDR + (8 * pgt_offset));
+  paddr_to_offset(fd, list, PGT_PADDR + (8 * pgt_offset));
   printf("\n\npme: %lx\n", lseek64(fd, 0, SEEK_CUR));
   if (read(fd, &pa_pdpte, sizeof(unsigned long long)) == -1) {
     _die("Failure to read in pa_pdpt: %llx", PGT_PADDR + (8 * pgt_offset));
@@ -445,7 +469,7 @@ unsigned long long paddr_translation(int fd, LHdr_list *list, unsigned long long
   printf("pa_pdpt: %llx, %llx\n", pa_pdpte, to_little_endian(pa_pdpte));
 
   /* read address of page directory */
-  seek_to_paddr(fd, list, pa_pdpte + (8 * pdpt_offset));
+  paddr_to_offset(fd, list, pa_pdpte + (8 * pdpt_offset));
   printf("\n\npa_pdee: %lx\n", lseek64(fd, 0, SEEK_CUR));
   if (read(fd, &pa_pde, sizeof(unsigned long long)) == -1) {
     _die("Failure to read in pa_pdpt: %llx", pa_pdpte + (8 * pdpt_offset));
@@ -453,14 +477,14 @@ unsigned long long paddr_translation(int fd, LHdr_list *list, unsigned long long
   printf("pa_pde: %llx, %llx\n",pa_pde, to_little_endian(pa_pde));
 
   /* read address of page tabe */
-  seek_to_paddr(fd, list, to_little_endian(pa_pde) + (8 * pde_offset));
+  paddr_to_offset(fd, list, to_little_endian(pa_pde) + (8 * pde_offset));
   if (read(fd, &pa_pte, sizeof(unsigned long long)) == -1) {
     _die("Failure to read in pa_pdpt: %llx", pa_pde + (8 * pde_offset));
   }
   printf("pa_pte: %llx, %llx\n", pa_pte, to_little_endian(pa_pte));
 
   /* read address of page */
-  seek_to_paddr(fd, list, to_little_endian(pa_pte) + (8 * pte_offset));
+  paddr_to_offset(fd, list, to_little_endian(pa_pte) + (8 * pte_offset));
   if (read(fd, &pa_page, sizeof(unsigned long long)) == -1) {
     _die("Failure to read in pa_pdpt: %llx", pa_pte + (8 * pte_offset));
   }
@@ -468,6 +492,8 @@ unsigned long long paddr_translation(int fd, LHdr_list *list, unsigned long long
 
   return to_little_endian(pa_page) + (8 * page_offset);
 }
+
+
 
 /**
  * This function prints out all the processes in the task_struct list starting at
@@ -480,37 +506,33 @@ void print_process_list(int fd, LHdr_list *list, struct task_struct *init_task) 
   task_struct_init(&curr);
 
   curr.pid = init_task->pid;
+  curr.ppid = init_task->ppid;
   strncpy(curr.comm, init_task->comm, TASK_COMM_LEN - 1);
   memcpy(&curr.tasks, &init_task->tasks, sizeof(struct list_head));
+  memcpy(&curr.parent_ptr, &init_task->parent_ptr, sizeof(struct task_struct *));
+
+  printf(" Name%*sPID%*sPPID%*sNext Task Addr%*sParent Task Addr\n", 
+    15, " ", 4, " ", 4, " ", 8, " ");
+  printf("==============================================================================\n");
 
   unsigned long long next_addr;
   while(curr.pid != 0 || isSwapperflag) {
-    next_addr = (unsigned long long) curr.tasks.next - 0xffff880000000000;
-    if (seek_to_paddr(fd, list, next_addr - tasks_offset + 1) == -1) {
+    printf("%-20s %-6d %-6d %p %p\n", 
+      curr.comm, curr.pid, curr.ppid, curr.tasks.next, curr.parent_ptr);
+    
+    next_addr = (unsigned long long) curr.tasks.next - STATIC_SHIFT;
+    if (paddr_to_offset(fd, list, next_addr - tasks_offset + 1) == -1) {
       break; // reached swapper/0
     }
+
     get_task_attr(fd, &curr, comm_offset, TASK_COMM_LEN, TASK_COMM_ID);
     get_task_attr(fd, &curr, pid_offset, TASK_PID_LEN, TASK_PID_ID);
     get_task_attr(fd, &curr, tasks_offset - 1, TASK_TASKS_LEN, TASK_TASKS_ID);
-    
-    printf("next: %s %d %llx\n", curr.comm, curr.pid, (unsigned long long) curr.tasks.next);
-    
+    get_task_attr(fd, &curr, parent_offset - 1, TASK_PARENT_PTR_LEN, TASK_PARENT_PTR_ID);
+    get_parent_pid(fd, list, &curr);
+        
     isSwapperflag = 0;
   }
-   
-  // printf("tasks.next: %llx, next_adddr: %llx\n", init_task->tasks.next, next_addr);
-  // unsigned long long offset = seek_to_paddr(fd, list, next_addr);
-  // printf("offset: %llx\n", offset);
-  // printf("paddr: %llx\n", paddr_from_seek(list, offset));
-
-  
-
-  // struct task_struct next;
-  // task_struct_init(&next);
-  // get_task_attr(fd, &next, comm_offset, TASK_COMM_LEN, TASK_COMM_ID);
-  // get_task_attr(fd, &next, pid_offset, TASK_PID_LEN, TASK_PID_ID);
-
-  // printf("next: %s %d\n", next.comm, next.pid);
 }
 
 /**
@@ -594,14 +616,6 @@ void process_dump(const char* sys_filename, const char* dump_filename) {
   task_struct_init(&init_task);
   unsigned long long init_task_vaddr = get_symbol_vaddr(map, INIT_TASK);
   find_init_task(dump_fd, headerList, &init_task, init_task_vaddr);
-  printf("init_addr: %llx\n", init_task_vaddr);
-
-  printf("task_struct: name: %s pid: %d\n tasks.next: %p\n tasks.prev: %p\n",
-    init_task.comm, 
-    init_task.pid,
-    init_task.tasks.next,
-    init_task.tasks.prev
-    );
   
   /* set the physical address of the page tables */
   unsigned long long pgt_vaddr = get_symbol_vaddr(map, INIT_PGT);

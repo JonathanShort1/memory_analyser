@@ -10,6 +10,7 @@ def main(filename):
 
     print "size: %#x" % size
     print "pid offset: %#x" % task_struct[1]["pid"][0]
+    print "ppid offset: %#x" % task_struct[1]["ppid"][0]
     print "comm offset: %#x" %  task_struct[1]["comm"][0]
     print "parent offset: %#x" % task_struct[1]["parent"][0]
     print "childlist off: %#x" % task_struct[1]["children"][0]
